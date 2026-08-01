@@ -89,6 +89,36 @@ button:hover { background: var(--bh-amber-400); }
   border-bottom: 1px solid var(--bh-border);
   background: var(--bh-surface);
   font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.conn-status {
+  font-size: 0.72rem;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  white-space: nowrap;
+}
+.conn-status::before {
+  content: '';
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.conn-status.live { color: #1a7f37; }
+.conn-status.reconnecting { color: var(--bh-amber-800); }
+.conn-status.reconnecting::before { animation: conn-pulse 1s ease-in-out infinite; }
+.conn-status.offline { color: #b3261e; }
+
+@keyframes conn-pulse {
+  50% { opacity: 0.25; }
 }
 .messages {
   flex: 1;

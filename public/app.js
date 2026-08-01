@@ -96,6 +96,7 @@ let lastMessageId = 0;
 async function selectGroup(group) {
   currentGroup = group;
   lastMessageId = 0;
+  reconnectDelay = RECONNECT_BASE_MS;
   $('#chat-header').textContent = group.name;
   $('#composer').hidden = false;
   $('#messages').innerHTML = '';
@@ -124,30 +125,66 @@ function renderMessage(m) {
   box.scrollTop = box.scrollHeight;
 }
 
+const RECONNECT_BASE_MS = 1000;
+const RECONNECT_MAX_MS = 30000;
+let reconnectDelay = RECONNECT_BASE_MS;
+let reconnectTimer = null;
+
+function setConnStatus(state, label) {
+  const el = $('#conn-status');
+  el.hidden = false;
+  el.className = `conn-status ${state}`;
+  el.textContent = label;
+}
+
 function connectSocket(group) {
+  clearTimeout(reconnectTimer);
   socket?.close();
+  setConnStatus('reconnecting', 'connecting');
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
   const ws = new WebSocket(`${proto}://${location.host}/ws?groupId=${group.id}&userId=${user.id}`);
   socket = ws;
+  // Live messages that arrive while the backfill fetch is in flight must wait:
+  // a live id 105 rendering before backfilled 101-104 would advance lastMessageId
+  // past them and the duplicate filter would drop them forever.
+  let backfilling = false;
+  const heldDuringBackfill = [];
+  ws.addEventListener('open', async () => {
+    if (socket !== ws || currentGroup?.id !== group.id) return;
+    reconnectDelay = RECONNECT_BASE_MS;
+    setConnStatus('live', 'live');
+    if (lastMessageId > 0) {
+      backfilling = true;
+      try {
+        // fetch anything missed while disconnected; renderMessage drops duplicates
+        const { messages } = await api(`/groups/${group.slug}/messages?after=${lastMessageId}`);
+        if (currentGroup?.id === group.id) messages.forEach(renderMessage);
+      } catch { /* socket is live, so new messages still arrive; backfill retries next reconnect */ }
+      backfilling = false;
+      heldDuringBackfill.splice(0).forEach(renderMessage);
+    }
+  });
   ws.addEventListener('message', (e) => {
     const payload = JSON.parse(e.data);
     if (payload.type === 'message' && currentGroup?.id === group.id) {
-      renderMessage(payload.message);
+      if (backfilling) heldDuringBackfill.push(payload.message);
+      else renderMessage(payload.message);
     }
   });
   ws.addEventListener('close', (e) => {
-    // 4xxx closes are auth/validation rejections — reconnecting won't help
-    if (socket !== ws || currentGroup?.id !== group.id || e.code >= 4000) return;
-    setTimeout(async () => {
+    if (socket !== ws || currentGroup?.id !== group.id) return;
+    if (e.code >= 4000) {
+      // auth/validation rejection — reconnecting won't help
+      setConnStatus('offline', 'not allowed');
+      return;
+    }
+    const delay = reconnectDelay;
+    reconnectDelay = Math.min(reconnectDelay * 2, RECONNECT_MAX_MS);
+    setConnStatus('reconnecting', `reconnecting in ${Math.round(delay / 1000)}s`);
+    reconnectTimer = setTimeout(() => {
       if (socket !== ws || currentGroup?.id !== group.id) return;
-      try {
-        // fetch anything missed while disconnected, then resubscribe
-        const { messages } = await api(`/groups/${group.slug}/messages?after=${lastMessageId}`);
-        if (currentGroup?.id !== group.id) return;
-        messages.forEach(renderMessage);
-      } catch { /* server still down — the next close event retries */ }
       connectSocket(group);
-    }, 2000);
+    }, delay);
   });
 }
 
