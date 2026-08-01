@@ -1,0 +1,152 @@
+/* BuildHall UI — colors come from brand variables.css (navy/amber/slate). */
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  color: var(--bh-ink);
+  background: var(--bh-surface-alt);
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.topbar {
+  background: var(--bh-navy-900);
+  color: var(--bh-on-primary);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.6rem 1rem;
+}
+.topbar .logo { height: 28px; }
+.session { font-size: 0.9rem; color: var(--bh-navy-200); }
+.session b { color: var(--bh-amber-500); }
+
+.layout {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 280px 1fr;
+  min-height: 0;
+}
+
+.sidebar {
+  background: var(--bh-surface);
+  border-right: 1px solid var(--bh-border);
+  padding: 1rem;
+  overflow-y: auto;
+}
+.sidebar h2 {
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--bh-muted);
+  margin: 1rem 0 0.5rem;
+}
+.sidebar section:first-child h2 { margin-top: 0; }
+
+.group-list, .feed { list-style: none; margin: 0 0 1rem; padding: 0; }
+.group-list li {
+  padding: 0.45rem 0.6rem;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.group-list li:hover { background: var(--bh-navy-50); }
+.group-list li.active {
+  background: var(--bh-navy-900);
+  color: var(--bh-on-primary);
+}
+.feed li {
+  padding: 0.5rem 0.6rem;
+  border: 1px solid var(--bh-border);
+  border-radius: 8px;
+  margin-bottom: 0.5rem;
+  font-size: 0.85rem;
+}
+.feed .muted { display: block; margin-top: 0.2rem; }
+
+.stack { display: flex; flex-direction: column; gap: 0.5rem; }
+input, select, button {
+  font: inherit;
+  padding: 0.5rem 0.6rem;
+  border: 1px solid var(--bh-border);
+  border-radius: 6px;
+  background: var(--bh-surface);
+  color: var(--bh-ink);
+}
+button {
+  background: var(--bh-amber-500);
+  color: var(--bh-on-accent);
+  border: none;
+  font-weight: 600;
+  cursor: pointer;
+}
+button:hover { background: var(--bh-amber-400); }
+
+.chat { display: flex; flex-direction: column; min-height: 0; }
+.chat-header {
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid var(--bh-border);
+  background: var(--bh-surface);
+  font-weight: 600;
+}
+.messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.msg {
+  max-width: 72ch;
+  padding: 0.55rem 0.8rem;
+  border-radius: 10px;
+  background: var(--bh-surface);
+  border: 1px solid var(--bh-border);
+}
+.msg .meta {
+  font-size: 0.75rem;
+  color: var(--bh-muted);
+  margin-bottom: 0.2rem;
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+.msg .author { font-weight: 600; color: var(--bh-ink); }
+.msg.ai { border-left: 3px solid var(--bh-amber-500); }
+.msg.checkpoint {
+  background: var(--bh-amber-50);
+  border-color: var(--bh-amber-200);
+}
+.badge {
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  background: var(--bh-navy-100);
+  color: var(--bh-navy-700);
+  border-radius: 4px;
+  padding: 0.1rem 0.35rem;
+}
+.msg.ai .badge { background: var(--bh-amber-100); color: var(--bh-amber-800); }
+
+.composer {
+  display: flex;
+  gap: 0.5rem;
+  padding: 0.75rem 1rem;
+  background: var(--bh-surface);
+  border-top: 1px solid var(--bh-border);
+}
+.composer #text { flex: 1; }
+
+.muted { color: var(--bh-muted); }
+
+dialog {
+  border: none;
+  border-radius: 12px;
+  padding: 2rem;
+  box-shadow: 0 10px 40px rgba(4, 20, 36, 0.3);
+}
+dialog::backdrop { background: rgba(4, 20, 36, 0.6); }
+.login-logo { width: 160px; margin: 0 auto 0.5rem; display: block; }

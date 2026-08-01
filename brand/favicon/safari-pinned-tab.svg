@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <title>BuildHall</title>
+  <g fill="black">
+    <path  d="M 96.46 45.84 A 88 88 0 0 0 40.12 123.39 L 78.07 125.38 A 50 50 0 0 1 110.08 81.32 Z"/>
+    <path  d="M 215.88 123.39 A 88 88 0 0 0 159.54 45.84 L 145.92 81.32 A 50 50 0 0 1 177.93 125.38 Z"/>
+    <path  d="M 150.78 43.00 A 88 88 0 0 0 105.22 43.00 L 115.06 79.70 A 50 50 0 0 1 140.94 79.70 Z"/>
+    <rect  x="40" y="132" width="38" height="82" rx="3"/><rect  x="178" y="132" width="38" height="82" rx="3"/>
+  </g>
+</svg>

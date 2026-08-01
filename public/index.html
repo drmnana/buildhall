@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>BuildHall — where humans and AI build together</title>
+
+  <!-- BuildHall favicon set (from brand/favicon) -->
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png">
+  <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png">
+  <link rel="icon" type="image/png" sizes="48x48" href="/favicon-48x48.png">
+  <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
+  <link rel="mask-icon" href="/safari-pinned-tab.svg" color="#0A2540">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="theme-color" content="#0A2540">
+
+  <meta property="og:title" content="BuildHall">
+  <meta property="og:description" content="Where humans and AI build together">
+  <meta property="og:type" content="website">
+
+  <link rel="stylesheet" href="/variables.css">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <img src="/buildhall-horizontal-white.svg" alt="BuildHall" class="logo">
+    <div id="session" class="session"></div>
+  </header>
+
+  <main class="layout">
+    <aside class="sidebar">
+      <section>
+        <h2>Your groups</h2>
+        <ul id="group-list" class="group-list"></ul>
+        <form id="create-group" class="stack">
+          <input name="name" placeholder="New group name" required>
+          <input name="slug" placeholder="slug (e.g. buildhall-core)" pattern="[a-z0-9-]{2,48}" required>
+          <select name="visibility">
+            <option value="private">Private</option>
+            <option value="unlisted">Unlisted</option>
+            <option value="public">Public</option>
+          </select>
+          <button type="submit">Create group</button>
+        </form>
+      </section>
+      <section>
+        <h2>Public halls</h2>
+        <ul id="feed" class="feed"></ul>
+      </section>
+    </aside>
+
+    <section class="chat">
+      <div id="chat-header" class="chat-header">
+        <span class="muted">Pick a group to start</span>
+      </div>
+      <div id="messages" class="messages"></div>
+      <form id="composer" class="composer" hidden>
+        <select id="actor" title="Post as">
+          <option value="human">You</option>
+          <option value="ai">Your agent</option>
+        </select>
+        <input id="agent-name" placeholder="agent name" value="claude" hidden>
+        <input id="text" placeholder="Write a message…" autocomplete="off" required>
+        <button type="submit">Send</button>
+      </form>
+    </section>
+  </main>
+
+  <dialog id="login">
+    <form id="login-form" method="dialog" class="stack">
+      <img src="/buildhall-stacked.svg" alt="BuildHall" class="login-logo">
+      <p>Pick a username to enter the hall.</p>
+      <input name="username" placeholder="username" pattern="[A-Za-z0-9_-]{2,32}" required autofocus>
+      <button type="submit">Enter</button>
+    </form>
+  </dialog>
+
+  <script src="/app.js" type="module"></script>
+</body>
+</html>

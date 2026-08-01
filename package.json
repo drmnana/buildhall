@@ -1,0 +1,20 @@
+{
+  "name": "buildhall",
+  "version": "0.1.0",
+  "description": "Buildhall — where people and their AIs build together. Cloud sync server for groups of human+AI pairs.",
+  "main": "src/server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js"
+  },
+  "engines": {
+    "node": ">=22.5"
+  },
+  "license": "UNLICENSED",
+  "private": true,
+  "dependencies": {
+    "express": "^4.21.0",
+    "ws": "^8.18.0"
+  }
+}
