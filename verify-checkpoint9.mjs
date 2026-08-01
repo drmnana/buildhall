@@ -144,6 +144,11 @@ try {
   const afterCount = (await api(app, 'GET', '/api/groups/hall/messages', { token: owner })).json.messages.length;
   check('restart does not replay either file', beforeCount === afterCount, `${beforeCount} -> ${afterCount}`);
 
+  // --- second launch while running -----------------------------------------
+  const dupe = startBridge();
+  check('a second launch notices the running app and exits cleanly',
+    await waitFor(() => dupe.exitCode === 0, 10000), `exit ${dupe.exitCode}`);
+
   // --- removing one leaves the other alone ---------------------------------
   const list = await conns();
   await api(bridge, 'DELETE', `/api/connections/${list[0].id}`);
@@ -156,6 +161,12 @@ try {
   check('logging out marks the surviving connection dead',
     await waitFor(async () => (await conns()).every((c) => c.status === 'dead')),
     JSON.stringify((await conns()).map((c) => `${c.status}:${c.detail}`)));
+
+  // --- quit endpoint --------------------------------------------------------
+  const quit = await api(bridge, 'POST', '/api/quit');
+  check('quit endpoint stops the app',
+    quit.status === 200 && await waitFor(() => bridgeProc.exitCode !== null, 10000),
+    `exit ${bridgeProc.exitCode}`);
 
   const failed = results.filter((r) => !r.ok);
   console.log(`\n${results.length - failed.length}/${results.length} checks passed`);

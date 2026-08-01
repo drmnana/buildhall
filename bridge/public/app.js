@@ -65,6 +65,13 @@ $('#add').addEventListener('submit', async (e) => {
   }
 });
 
+$('#quit').addEventListener('click', async () => {
+  if (!confirm('Stop the bridge? Every connection will disconnect until you launch it again.')) return;
+  await api('/api/quit', { method: 'POST' }).catch(() => {});
+  document.body.innerHTML =
+    '<p style="font-family:Inter,sans-serif;padding:2rem">BuildHall Bridge stopped. You can close this tab.</p>';
+});
+
 api('/api/config-path').then(({ path }) => { $('#config-path').textContent = path; });
 render();
 setInterval(render, 3000);

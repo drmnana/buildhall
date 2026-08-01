@@ -7,6 +7,9 @@ h1,h2,.brand{font-family:"Space Grotesk",Inter,sans-serif}
 .brand{display:flex;align-items:center;gap:.6rem;font-weight:700;font-size:1.1rem}
 .mark{width:22px;height:22px;border-radius:11px 11px 3px 3px;border:5px solid #fff;border-bottom:0;display:inline-block}
 .topbar .muted{color:#8FA3B8;font-size:.78rem}
+.topbar-right{display:flex;align-items:center;gap:.8rem}
+.btn.quit{background:transparent;border-color:#3A4E63;color:#C8D4E0}
+.btn.quit:hover{background:#1B3A57}
 main{max-width:820px;margin:0 auto;padding:1.2rem;display:flex;flex-direction:column;gap:1.1rem}
 .card{background:#fff;border:1px solid var(--slate200);border-radius:12px;padding:1rem 1.15rem}
 h1{font-size:1.3rem;margin:0 0 .4rem}h2{font-size:.82rem;text-transform:uppercase;letter-spacing:.07em;color:var(--slate500);margin:0 0 .8rem}

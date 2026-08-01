@@ -127,13 +127,35 @@ app.post('/api/connections/:id/restart', (req, res) => {
 
 app.get('/api/config-path', (_req, res) => res.json({ path: CONFIG_FILE }));
 
+app.post('/api/quit', (_req, res) => {
+  res.json({ ok: true });
+  for (const c of connections.values()) c.stop();
+  server.close();
+  setTimeout(() => process.exit(0), 300).unref();
+});
+
 const server = createServer(app);
+
+// A second launch (double-clicking the shortcut while it is already running)
+// should not crash with EADDRINUSE — treat the click as "show me the panel".
+server.on('error', (err) => {
+  if (err.code === 'EADDRINUSE') {
+    console.log(`BuildHall Bridge is already running at http://${HOST}:${PORT} — opening the panel.`);
+    if (process.env.BRIDGE_NO_OPEN !== '1') openBrowser(`http://${HOST}:${PORT}`);
+    process.exit(0);
+  }
+  throw err;
+});
+
 server.listen(PORT, HOST, () => {
   const url = `http://${HOST}:${PORT}`;
   console.log(`BuildHall Bridge running at ${url}`);
   console.log(`Config: ${CONFIG_FILE}`);
   console.log(`${connections.size} connection(s) restored.`);
-  if (process.env.BRIDGE_NO_OPEN !== '1') openBrowser(url);
+  // The panel pops up exactly once: on first run, when there is nothing
+  // configured and the user needs it. Every later launch is silent — open the
+  // shortcut again (or the printed URL) whenever you want the panel.
+  if (process.env.BRIDGE_NO_OPEN !== '1' && connections.size === 0) openBrowser(url);
 });
 
 function openBrowser(url) {
