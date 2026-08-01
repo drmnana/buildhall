@@ -7,6 +7,7 @@
 import { WebSocket } from 'ws';
 import { appendFileSync, existsSync, readFileSync, statSync, watch, writeFileSync } from 'node:fs';
 import { EventEmitter } from 'node:events';
+import { spawn } from 'node:child_process';
 
 const MARK = 'buildhall';
 const SENT_TTL_MS = 30000;
@@ -155,6 +156,27 @@ export class Connection extends EventEmitter {
     // tailer re-sending it.
     this.received += 1;
     this.emit('status', this.toJSON());
+    this.wake();
+  }
+
+  // The file changing does NOT wake an agent by itself — nothing can reach
+  // inside a running model. If the user configured a wake command, run it when
+  // messages arrive: a headless agent invocation, a desktop notification,
+  // whatever they chose. Debounced so a burst of messages fires it once.
+  wake() {
+    if (!this.cfg.wake || this.wakePending || this.stopped) return;
+    this.wakePending = setTimeout(() => {
+      this.wakePending = null;
+      try {
+        spawn(this.cfg.wake, {
+          shell: true,
+          detached: true,
+          stdio: 'ignore',
+          env: { ...process.env, BUILDHALL_FILE: this.cfg.file, BUILDHALL_GROUP: this.cfg.group },
+        }).unref();
+      } catch { /* wake is best-effort; delivery already happened */ }
+    }, 1000);
+    this.timers.push(this.wakePending);
   }
 
   die(reason) {

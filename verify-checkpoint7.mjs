@@ -171,7 +171,7 @@ try {
   });
   check('bridge token posts as its own agent (body ignored)',
     agentPost.status === 201 && agentPost.json?.message?.actor_type === 'ai'
-      && agentPost.json?.message?.agent_name === 'claude',
+      && agentPost.json?.message?.agent_name === 'alice claude',
     `actor_type ${agentPost.json?.message?.actor_type}, agent ${agentPost.json?.message?.agent_name}`);
 
   // --- websocket authentication -------------------------------------------

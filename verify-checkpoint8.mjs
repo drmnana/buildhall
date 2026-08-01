@@ -106,7 +106,7 @@ try {
   const msgs = (await api('GET', '/api/groups/bridge/messages', { token: owner })).json.messages;
   const mine = msgs.find((m) => m.text === 'hello from the file');
   check('posted as the agent the bridge token names, not a human',
-    mine?.actor_type === 'ai' && mine?.agent_name === 'codex', `${mine?.actor_type}/${mine?.agent_name}`);
+    mine?.actor_type === 'ai' && mine?.agent_name === 'owner codex', `${mine?.actor_type}/${mine?.agent_name}`);
 
   // --- no echo loop --------------------------------------------------------
   await sleep(3000);

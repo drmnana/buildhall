@@ -28,6 +28,7 @@ const conn = new Connection({
   group,
   file,
   replay: process.env.BUILDHALL_REPLAY === '1',
+  wake: process.env.BUILDHALL_WAKE || undefined,
 });
 
 const log = (...a) => console.log(`[buildhall ${new Date().toISOString()}]`, ...a);

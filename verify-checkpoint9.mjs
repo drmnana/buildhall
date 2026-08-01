@@ -6,7 +6,7 @@
 // are asserted here, along with the two ways a user gets it wrong: pasting a
 // login token instead of a bridge token, and pasting a dead one.
 import { spawn } from 'node:child_process';
-import { appendFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -90,8 +90,10 @@ try {
   check('nothing broken was saved', (await conns()).length === 0);
 
   // --- two agents, one app -------------------------------------------------
+  const marker = path.join(workDir, 'woke.txt');
   const a = await api(bridge, 'POST', '/api/connections', {
-    body: { label: 'Claude', token: tokA, group: 'hall', file: fileA, url: app },
+    body: { label: 'Claude', token: tokA, group: 'hall', file: fileA, url: app,
+            wake: `echo woke >> ${marker}` },
   });
   const b = await api(bridge, 'POST', '/api/connections', {
     body: { label: 'Codex', token: tokB, group: 'hall', file: fileB, url: app },
@@ -113,11 +115,13 @@ try {
   const fromA = msgs.find((m) => m.text === 'from claude file');
   const fromB = msgs.find((m) => m.text === 'from codex file');
   check('each is attributed to its own agent name',
-    fromA?.agent_name === 'claude' && fromB?.agent_name === 'codex', `${fromA?.agent_name} / ${fromB?.agent_name}`);
+    fromA?.agent_name === 'bridgeowner claude' && fromB?.agent_name === 'bridgeowner codex', `${fromA?.agent_name} / ${fromB?.agent_name}`);
 
   // --- cross delivery: each agent sees the other's message ------------------
   check("claude's file receives codex's message", await waitFor(() => lines(fileA).some((l) => l.text === 'from codex file')));
   check("codex's file receives claude's message", await waitFor(() => lines(fileB).some((l) => l.text === 'from claude file')));
+  check('wake command fires when a message lands in the file',
+    await waitFor(() => existsSync(marker), 15000));
 
   await sleep(4000);
   const after = (await api(app, 'GET', '/api/groups/hall/messages', { token: owner })).json.messages;

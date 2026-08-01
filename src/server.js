@@ -194,9 +194,14 @@ app.post('/api/auth/bridge-tokens', requireUser, requireSessionToken, (req, res)
   if (!/^[a-z0-9 _.-]{2,32}$/i.test(agentName)) {
     return res.status(400).json({ error: 'agentName must be 2-32 chars: letters, digits, space, _ . or -' });
   }
-  const { token, bridgeTokenId } = createBridgeToken(req.identity.sessionId, req.user.id, agentName);
+  // The stored identity is "<username> <name>", with the username taken from
+  // the login session — never from input. Whatever the token is called, the
+  // group always sees whose agent it is, and nobody can name their agent after
+  // someone else's.
+  const composedName = `${req.user.username} ${agentName}`;
+  const { token, bridgeTokenId } = createBridgeToken(req.identity.sessionId, req.user.id, composedName);
   // Returned once and never retrievable again — only its digest is stored.
-  res.status(201).json({ bridgeTokenId, agentName, token });
+  res.status(201).json({ bridgeTokenId, agentName: composedName, token });
 });
 
 app.delete('/api/auth/bridge-tokens/:id', requireUser, requireSessionToken, (req, res) => {

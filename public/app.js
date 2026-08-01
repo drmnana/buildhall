@@ -312,8 +312,10 @@ function renderMessage(m) {
   const div = document.createElement('div');
   div.className = `msg ${m.actor_type}${m.kind === 'checkpoint' ? ' checkpoint' : ''}`;
   div.dataset.id = m.id;
+  // Agent names already carry the owner's username ("drmnana codex"), composed
+  // server-side — appending "for drmnana" again would read twice.
   const author = m.actor_type === 'ai'
-    ? `${escapeHtml(m.agent_name)} <span class="muted">for ${escapeHtml(m.username)}</span>`
+    ? escapeHtml(m.agent_name)
     : escapeHtml(m.display_name || m.username);
   const badge = m.actor_type === 'ai' ? 'agent' : m.kind === 'checkpoint' ? 'checkpoint' : 'human';
   div.innerHTML =

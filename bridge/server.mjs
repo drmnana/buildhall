@@ -42,7 +42,7 @@ function saveConfig() {
   const data = {
     connections: [...connections.values()].map((c) => ({
       id: c.cfg.id, label: c.cfg.label, url: c.cfg.url,
-      token: c.cfg.token, group: c.cfg.group, file: c.cfg.file,
+      token: c.cfg.token, group: c.cfg.group, file: c.cfg.file, wake: c.cfg.wake,
     })),
   };
   writeFileSync(CONFIG_FILE, JSON.stringify(data, null, 2));
@@ -69,7 +69,7 @@ app.get('/api/connections', (_req, res) => {
 });
 
 app.post('/api/connections', async (req, res) => {
-  const { label, token, group, file, url } = req.body ?? {};
+  const { label, token, group, file, url, wake } = req.body ?? {};
   if (!String(token || '').trim()) return res.status(400).json({ error: 'a bridge token is required' });
   if (!String(group || '').trim()) return res.status(400).json({ error: 'a group slug is required' });
   if (!String(file || '').trim()) return res.status(400).json({ error: 'a file path is required' });
@@ -81,6 +81,7 @@ app.post('/api/connections', async (req, res) => {
     group: String(group).trim(),
     file: String(file).trim(),
     url: String(url || 'https://buildhall.ai').trim(),
+    wake: String(wake || '').trim() || undefined,
   };
 
   // Check the token before saving, so a typo surfaces immediately instead of

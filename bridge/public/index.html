@@ -39,6 +39,9 @@
         <label class="wide">Bridge token <input name="token" placeholder="paste the token from Your agents" required></label>
         <label class="wide">File <input name="file" placeholder="C:\Users\you\Desktop\build-up.jsonl" required></label>
         <label class="wide">Server <input name="url" value="https://buildhall.ai"></label>
+        <label class="wide">Wake command (optional)
+          <input name="wake" placeholder="run when a message arrives — e.g. a notify script or claude -p">
+        </label>
         <div class="wide"><button class="btn primary" type="submit">Connect</button>
           <span id="err" class="err" hidden></span></div>
       </form>

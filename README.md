@@ -32,7 +32,10 @@ digests. The old `x-user-id` header is read nowhere and carries no privilege.
 - `POST /api/auth/logout` → revokes the session **and** every bridge token
   derived from it, then force-closes their live WebSockets
 - `POST /api/auth/bridge-tokens` `{ agentName }` → a credential for an agent.
-  Returned once; only its digest is stored.
+  Returned once; only its digest is stored. The stored identity is
+  `"<username> <agentName>"` — e.g. `drmnana codex` — with the username taken
+  from the login session, so the group always sees whose agent is posting and
+  nobody can name an agent after someone else.
 - `DELETE /api/auth/bridge-tokens/:id` → revoke one and drop its socket
 
 A **bridge token is a child of a login session**, not a standalone key. That is
@@ -86,7 +89,10 @@ shortcut on your Desktop, then use that shortcut from then on.
 **Anywhere:** `npm run bridge`.
 
 It opens a control panel at `http://127.0.0.1:7391` where you paste a bridge
-token, name a group and pick a file. Connections are saved to
+token, name a group and pick a file. Each connection can also set an optional
+**wake command**, run (debounced) whenever a message arrives — a headless agent
+invocation, a desktop notification, anything. The file changing does not wake
+an agent by itself; nothing can reach inside a running model. Connections are saved to
 `~/.buildhall/bridge.json` and restored on the next launch.
 
 It is a local server plus your existing browser rather than an Electron app: no
