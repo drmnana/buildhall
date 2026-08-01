@@ -17,7 +17,16 @@ const base = `http://localhost:${PORT}`;
 const wsBase = `ws://localhost:${PORT}`;
 
 const server = spawn(process.execPath, ['src/server.js'], {
-  env: { ...process.env, DATA_DIR: dataDir, PORT: String(PORT) },
+  env: {
+    ...process.env,
+    DATA_DIR: dataDir,
+    PORT: String(PORT),
+    // Tighten the login lockout so the brute-force checks are reachable, and
+    // raise the per-IP ceiling so the rest of the suite (all from 127.0.0.1)
+    // does not trip it before those checks run.
+    LOGIN_MAX_FAILURES: '4',
+    LOGIN_IP_MAX_FAILURES: '500',
+  },
   stdio: ['ignore', 'pipe', 'pipe'],
 });
 let serverLog = '';
@@ -227,6 +236,48 @@ try {
     && (await api('GET', '/api/auth/me', { token: relogin.json?.token })).status === 200);
   check('old bridge token stays dead after re-login',
     (await api('GET', '/api/auth/me', { token: bridgeToken })).status === 401);
+
+  // --- brute-force protection ----------------------------------------------
+  // The server under test runs with LOGIN_MAX_FAILURES=4 (see spawn env) so the
+  // lockout is reachable without hammering it hundreds of times.
+  await api('POST', '/api/auth/register', { body: { username: 'target', password: 'target-password-1' } });
+
+  let lockedAt = null;
+  for (let i = 1; i <= 6 && lockedAt === null; i++) {
+    const r = await api('POST', '/api/auth/login', { body: { username: 'target', password: 'wrong-guess' } });
+    if (r.status === 429) lockedAt = i;
+  }
+  check('repeated wrong passwords lock the account out', lockedAt !== null, `429 on attempt ${lockedAt}`);
+  check('lockout arrives only after the allowed failures', lockedAt === 5, `attempt ${lockedAt}`);
+
+  const locked = await api('POST', '/api/auth/login', { body: { username: 'target', password: 'target-password-1' } });
+  check('the CORRECT password is also refused while locked out', locked.status === 429, `status ${locked.status}`);
+  check('429 carries a retryAfterSeconds hint', Number(locked.json?.retryAfterSeconds) > 0, JSON.stringify(locked.json));
+
+  const otherUser = await api('POST', '/api/auth/login', { body: { username: 'alice', password: 'nope-wrong' } });
+  check('lockout is scoped to the username, not the whole server', otherUser.status === 401, `status ${otherUser.status}`);
+
+  const ghostLocked = await api('POST', '/api/auth/login', { body: { username: 'target', password: 'x' } });
+  check('locked response is identical for any password (no probing)',
+    ghostLocked.status === 429 && ghostLocked.json?.error === locked.json?.error);
+
+  // A correct password must clear the counter so real users are not punished
+  // for their own typos.
+  await api('POST', '/api/auth/register', { body: { username: 'typist', password: 'typist-password-1' } });
+  for (let i = 0; i < 3; i++) {
+    await api('POST', '/api/auth/login', { body: { username: 'typist', password: 'oops' } });
+  }
+  const recovered = await api('POST', '/api/auth/login', { body: { username: 'typist', password: 'typist-password-1' } });
+  check('a correct password after some typos still succeeds', recovered.status === 200, `status ${recovered.status}`);
+  // Three failures already happened before that success. With a max of 4, three
+  // MORE failures can only all return 401 if the success genuinely zeroed the
+  // counter — otherwise the total would be 6 and the tail would be 429.
+  let afterReset = null;
+  for (let i = 0; i < 3; i++) {
+    afterReset = await api('POST', '/api/auth/login', { body: { username: 'typist', password: 'oops' } });
+  }
+  check('success reset the counter (3 more failures still only 401)',
+    afterReset.status === 401, `status ${afterReset.status}`);
 
   const failed = results.filter((r) => !r.ok);
   console.log(`\n${results.length - failed.length}/${results.length} checks passed`);

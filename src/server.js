@@ -20,6 +20,18 @@ import {
   verifyPassword,
 } from './auth.js';
 import {
+  consumeFailure,
+  createRateLimiter,
+  ipKey,
+  resetOnSuccess,
+  usernameKey,
+  LOGIN_MAX_FAILURES,
+  LOGIN_WINDOW_MS,
+  LOGIN_IP_MAX_FAILURES,
+  REGISTER_MAX,
+  REGISTER_WINDOW_MS,
+} from './rate-limit.js';
+import {
   getUser,
   createGroup,
   getGroupBySlug,
@@ -39,6 +51,11 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 3000;
 
 const app = express();
+// Render terminates TLS at its load balancer, so the socket address is always
+// the proxy. Trusting exactly one hop makes req.ip the real client address,
+// which the auth rate limiter keys on. Without this every request would share
+// a single key and one attacker would lock out everyone.
+app.set('trust proxy', 1);
 app.use(express.json({ limit: '256kb' }));
 
 // --- health check ----------------------------------------------------------
@@ -85,7 +102,22 @@ function bearerToken(req) {
   return /^bearer$/i.test(scheme || '') ? (value || '').trim() : null;
 }
 
-app.post('/api/auth/register', (req, res) => {
+// Login is guarded twice: per username so one account cannot be ground down,
+// and per client address so an attacker cannot spray many usernames from one
+// host. Both count failures only. Registration counts every request, since the
+// cost there is account creation itself.
+const loginByUsername = createRateLimiter({
+  windowMs: LOGIN_WINDOW_MS, max: LOGIN_MAX_FAILURES, key: usernameKey('login-user'),
+});
+const loginByIp = createRateLimiter({
+  windowMs: LOGIN_WINDOW_MS, max: LOGIN_IP_MAX_FAILURES, key: ipKey('login-ip'),
+});
+const registerByIp = createRateLimiter({
+  windowMs: REGISTER_WINDOW_MS, max: REGISTER_MAX, key: ipKey('register-ip'),
+  countAllRequests: true,
+});
+
+app.post('/api/auth/register', registerByIp, (req, res) => {
   const username = String(req.body?.username || '').trim();
   const password = String(req.body?.password || '');
   if (!USERNAME_RE.test(username)) {
@@ -102,15 +134,19 @@ app.post('/api/auth/register', (req, res) => {
   res.status(201).json({ user: publicUser(user), token });
 });
 
-app.post('/api/auth/login', (req, res) => {
+app.post('/api/auth/login', loginByUsername, loginByIp, (req, res) => {
   const username = String(req.body?.username || '').trim();
   const password = String(req.body?.password || '');
   const user = getUserByUsername(username);
   // One generic failure for unknown user, legacy NULL hash, and wrong
   // password, so the response cannot be used to enumerate accounts.
   if (!user || !verifyPassword(password, user.password_hash)) {
+    consumeFailure(req);
     return res.status(401).json({ error: 'invalid username or password' });
   }
+  // A correct password clears the counters, so a legitimate user is never
+  // locked out by their own earlier typos.
+  resetOnSuccess(req);
   const { token } = createSession(user.id);
   res.json({ user: publicUser(user), token });
 });

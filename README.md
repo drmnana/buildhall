@@ -47,11 +47,31 @@ WebSockets authenticate during the HTTP upgrade — before the handshake
 completes — using the `bh-token` subprotocol rather than a query parameter, so
 tokens stay out of access logs and Referer headers.
 
+### Brute-force protection
+
+Login is rate limited twice: per username, so one account cannot be ground
+down, and per client address, so an attacker cannot spray many usernames from
+one host. Only **failures** count — a correct password clears the counter, so a
+real user is never locked out by their own typos. A locked response is byte-for-byte
+identical whatever password is sent, so a lockout cannot be used to probe for
+valid accounts. Registration is limited per address, counting every request.
+
+Tunable via env (defaults shown): `LOGIN_MAX_FAILURES=5`,
+`LOGIN_WINDOW_MS=900000`, `LOGIN_IP_MAX_FAILURES=60`, `REGISTER_MAX=10`,
+`REGISTER_WINDOW_MS=3600000`.
+
+Counters are in memory. That is correct while the SQLite disk pins the service
+to one instance; if it ever scales horizontally this must move to shared
+storage, or the effective limit multiplies by the instance count. Express is
+configured with `trust proxy = 1` so `req.ip` is the real client behind
+Render's load balancer rather than the balancer itself.
+
 ## Verify
 
 ```sh
 node verify-checkpoint5.mjs   # 11 checks — pinned checkpoints, paging, context
-node verify-checkpoint7.mjs   # 36 checks — auth, spoofing, logout-kills-bridge
+node verify-checkpoint7.mjs   # 44 checks — auth, spoofing, logout-kills-bridge,
+                              #             brute-force lockout
 ```
 
 ## Notes
