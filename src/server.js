@@ -17,6 +17,7 @@ import {
   joinGroup,
   addMessage,
   listMessages,
+  listCheckpoints,
   publicFeed,
 } from './db.js';
 
@@ -65,10 +66,19 @@ app.post('/api/groups', requireUser, (req, res) => {
   if (!/^[a-z0-9-]{2,48}$/.test(String(slug || ''))) {
     return res.status(400).json({ error: 'slug must be 2-48 chars: lowercase letters, digits, -' });
   }
-  if (!String(name || '').trim()) return res.status(400).json({ error: 'name is required' });
+  const trimmedName = String(name || '').trim();
+  if (!trimmedName) return res.status(400).json({ error: 'name is required' });
+  if (trimmedName.length > 80) return res.status(400).json({ error: 'name must be 80 characters or fewer' });
+  if (String(description || '').length > 500 || String(goal || '').length > 500) {
+    return res.status(400).json({ error: 'description and goal must be 500 characters or fewer' });
+  }
+  // reject unknown visibility here so it's a 400, not a SQLite CHECK failure (500)
+  if (visibility != null && !['public', 'unlisted', 'private'].includes(visibility)) {
+    return res.status(400).json({ error: "visibility must be 'public', 'unlisted' or 'private'" });
+  }
   if (getGroupBySlug(slug)) return res.status(409).json({ error: 'slug already taken' });
   const group = createGroup({
-    slug, name: name.trim(), description, goal, visibility, createdBy: req.user.id,
+    slug, name: trimmedName, description, goal, visibility, createdBy: req.user.id,
   });
   res.status(201).json({ group });
 });
@@ -96,9 +106,30 @@ function requireMember(req, res, next) {
   next();
 }
 
+// Query params must be non-negative integers; anything else is a 400 rather
+// than silently coercing to 0 and returning the wrong page.
+function intParam(value, fallback) {
+  if (value === undefined) return fallback;
+  const n = Number(value);
+  return Number.isInteger(n) && n >= 0 ? n : null;
+}
+
 app.get('/api/groups/:slug/messages', requireUser, requireMember, (req, res) => {
-  const afterId = Number(req.query.after) || 0;
-  res.json({ messages: listMessages(req.group.id, { afterId }) });
+  const afterId = intParam(req.query.after, 0);
+  const beforeId = intParam(req.query.before, 0);
+  const limit = intParam(req.query.limit, 200);
+  if (afterId === null || beforeId === null || limit === null) {
+    return res.status(400).json({ error: 'after, before and limit must be non-negative integers' });
+  }
+  res.json({
+    messages: listMessages(req.group.id, {
+      afterId, beforeId, limit: Math.min(Math.max(limit, 1), 200),
+    }),
+  });
+});
+
+app.get('/api/groups/:slug/checkpoints', requireUser, requireMember, (req, res) => {
+  res.json({ checkpoints: listCheckpoints(req.group.id) });
 });
 
 app.post('/api/groups/:slug/messages', requireUser, requireMember, (req, res) => {
@@ -107,14 +138,18 @@ app.post('/api/groups/:slug/messages', requireUser, requireMember, (req, res) =>
   if (!['human', 'ai'].includes(actorType)) {
     return res.status(400).json({ error: "actorType must be 'human' or 'ai'" });
   }
-  if (actorType === 'ai' && !String(agentName || '').trim()) {
-    return res.status(400).json({ error: 'agentName is required for ai messages' });
+  if (actorType === 'ai' && !/^[a-z0-9 _.-]{2,32}$/i.test(String(agentName || '').trim())) {
+    return res.status(400).json({ error: 'agentName is required for ai messages (2-32 chars)' });
+  }
+  if (kind != null && !['message', 'checkpoint'].includes(kind)) {
+    return res.status(400).json({ error: "kind must be 'message' or 'checkpoint'" });
   }
   if (kind === 'checkpoint' && req.membership.role !== 'admin') {
     return res.status(403).json({ error: 'only admins can post checkpoints' });
   }
   const body = String(text || '').trim();
   if (!body) return res.status(400).json({ error: 'text is required' });
+  if (body.length > 4000) return res.status(400).json({ error: 'text must be 4000 characters or fewer' });
   const message = addMessage({
     groupId: req.group.id,
     userId: req.user.id,

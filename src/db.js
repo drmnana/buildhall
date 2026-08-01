@@ -147,7 +147,24 @@ export function addMessage({ groupId, userId, actorType, agentName, kind, text }
     .get(lastInsertRowid);
 }
 
-export function listMessages(groupId, { afterId = 0, limit = 200 } = {}) {
+export const MESSAGES_PAGE_LIMIT = 200;
+
+export function listMessages(groupId, { afterId = 0, beforeId = 0, limit = MESSAGES_PAGE_LIMIT } = {}) {
+  limit = Math.min(Math.max(1, limit), MESSAGES_PAGE_LIMIT);
+  if (beforeId > 0) {
+    // backward page (loading older history): newest `limit` rows below beforeId,
+    // returned in ascending order like every other message response
+    return db
+      .prepare(
+        `SELECT * FROM (
+           SELECT m.*, u.username, u.display_name FROM messages m
+           JOIN users u ON u.id = m.user_id
+           WHERE m.group_id = ? AND m.id < ?
+           ORDER BY m.id DESC LIMIT ?
+         ) ORDER BY id ASC`
+      )
+      .all(groupId, beforeId, limit);
+  }
   return db
     .prepare(
       `SELECT m.*, u.username, u.display_name FROM messages m
@@ -156,6 +173,24 @@ export function listMessages(groupId, { afterId = 0, limit = 200 } = {}) {
        ORDER BY m.id ASC LIMIT ?`
     )
     .all(groupId, afterId, limit);
+}
+
+// --- checkpoints ----------------------------------------------------------
+
+export function listCheckpoints(groupId, limit = 20) {
+  limit = Math.min(Math.max(1, limit), 100);
+  return db
+    .prepare(
+      `SELECT m.*, u.username, u.display_name FROM messages m
+       JOIN users u ON u.id = m.user_id
+       WHERE m.group_id = ? AND m.kind = 'checkpoint'
+       ORDER BY m.id DESC LIMIT ?`
+    )
+    .all(groupId, limit);
+}
+
+export function latestCheckpoint(groupId) {
+  return listCheckpoints(groupId, 1)[0] ?? null;
 }
 
 // --- public feed ---------------------------------------------------------
