@@ -16,7 +16,9 @@ import {
   getMembership,
   joinGroup,
   addMessage,
+  getMessageInGroup,
   listMessages,
+  lastMessages,
   listCheckpoints,
   publicFeed,
 } from './db.js';
@@ -115,6 +117,9 @@ function intParam(value, fallback) {
 }
 
 app.get('/api/groups/:slug/messages', requireUser, requireMember, (req, res) => {
+  if (req.query.after !== undefined && req.query.before !== undefined) {
+    return res.status(400).json({ error: 'after and before are mutually exclusive — pass one or neither' });
+  }
   const afterId = intParam(req.query.after, 0);
   const beforeId = intParam(req.query.before, 0);
   const limit = intParam(req.query.limit, 200);
@@ -132,9 +137,23 @@ app.get('/api/groups/:slug/checkpoints', requireUser, requireMember, (req, res) 
   res.json({ checkpoints: listCheckpoints(req.group.id) });
 });
 
+// Catch-up slice for agents: the newest `limit` messages in reading order,
+// plus the latest checkpoint so the caller knows where summarized history ends.
+app.get('/api/groups/:slug/context', requireUser, requireMember, (req, res) => {
+  const limit = intParam(req.query.limit, 50);
+  if (limit === null || limit < 1) {
+    return res.status(400).json({ error: 'limit must be a positive integer' });
+  }
+  const [checkpoint] = listCheckpoints(req.group.id, 1);
+  res.json({
+    checkpoint: checkpoint ?? null,
+    messages: lastMessages(req.group.id, limit),
+  });
+});
+
 app.post('/api/groups/:slug/messages', requireUser, requireMember, (req, res) => {
   if (!req.membership) return res.status(403).json({ error: 'join the group to post' });
-  const { actorType = 'human', agentName, kind, text } = req.body ?? {};
+  const { actorType = 'human', agentName, kind, text, pinnedMessageId } = req.body ?? {};
   if (!['human', 'ai'].includes(actorType)) {
     return res.status(400).json({ error: "actorType must be 'human' or 'ai'" });
   }
@@ -147,6 +166,18 @@ app.post('/api/groups/:slug/messages', requireUser, requireMember, (req, res) =>
   if (kind === 'checkpoint' && req.membership.role !== 'admin') {
     return res.status(403).json({ error: 'only admins can post checkpoints' });
   }
+  // a checkpoint may pin the message it marks; the pin must be a real message
+  // in this same group, so a stale or cross-group id is a 400, not a dead link
+  let pinId = null;
+  if (pinnedMessageId != null) {
+    if (kind !== 'checkpoint') {
+      return res.status(400).json({ error: 'pinnedMessageId is only allowed on checkpoints' });
+    }
+    pinId = Number(pinnedMessageId);
+    if (!Number.isInteger(pinId) || pinId <= 0 || !getMessageInGroup(req.group.id, pinId)) {
+      return res.status(400).json({ error: 'pinnedMessageId must reference a message in this group' });
+    }
+  }
   const body = String(text || '').trim();
   if (!body) return res.status(400).json({ error: 'text is required' });
   if (body.length > 4000) return res.status(400).json({ error: 'text must be 4000 characters or fewer' });
@@ -157,6 +188,7 @@ app.post('/api/groups/:slug/messages', requireUser, requireMember, (req, res) =>
     agentName: actorType === 'ai' ? agentName.trim() : null,
     kind,
     text: body,
+    pinnedMessageId: pinId,
   });
   broadcast(req.group.id, { type: 'message', message });
   res.status(201).json({ message });

@@ -55,6 +55,9 @@ db.exec(`
     -- as the group's preview in the public feed
     kind        TEXT NOT NULL DEFAULT 'message'
                 CHECK (kind IN ('message','checkpoint')),
+    -- a checkpoint may pin the specific message it marks; null for plain
+    -- checkpoints and for every non-checkpoint message
+    pinned_message_id INTEGER REFERENCES messages(id),
     text        TEXT NOT NULL,
     created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
   );
@@ -64,6 +67,13 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_messages_checkpoints
     ON messages (group_id, kind) WHERE kind = 'checkpoint';
 `);
+
+// Migration for databases created before pinned_message_id existed: CREATE
+// TABLE IF NOT EXISTS won't touch them, so add the column in place.
+const messageColumns = db.prepare(`SELECT name FROM pragma_table_info('messages')`).all();
+if (!messageColumns.some((c) => c.name === 'pinned_message_id')) {
+  db.exec(`ALTER TABLE messages ADD COLUMN pinned_message_id INTEGER REFERENCES messages(id)`);
+}
 
 // --- users ---------------------------------------------------------------
 
@@ -132,19 +142,25 @@ export function joinGroup(groupId, userId, role = 'member') {
 
 // --- messages ------------------------------------------------------------
 
-export function addMessage({ groupId, userId, actorType, agentName, kind, text }) {
+export function addMessage({ groupId, userId, actorType, agentName, kind, pinnedMessageId, text }) {
   const { lastInsertRowid } = db
     .prepare(
-      `INSERT INTO messages (group_id, user_id, actor_type, agent_name, kind, text)
-       VALUES (?, ?, ?, ?, ?, ?)`
+      `INSERT INTO messages (group_id, user_id, actor_type, agent_name, kind, pinned_message_id, text)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
     )
-    .run(groupId, userId, actorType, agentName ?? null, kind ?? 'message', text);
+    .run(groupId, userId, actorType, agentName ?? null, kind ?? 'message', pinnedMessageId ?? null, text);
   return db
     .prepare(
       `SELECT m.*, u.username, u.display_name FROM messages m
        JOIN users u ON u.id = m.user_id WHERE m.id = ?`
     )
     .get(lastInsertRowid);
+}
+
+export function getMessageInGroup(groupId, messageId) {
+  return db
+    .prepare('SELECT * FROM messages WHERE id = ? AND group_id = ?')
+    .get(messageId, groupId);
 }
 
 export const MESSAGES_PAGE_LIMIT = 200;
@@ -173,6 +189,22 @@ export function listMessages(groupId, { afterId = 0, beforeId = 0, limit = MESSA
        ORDER BY m.id ASC LIMIT ?`
     )
     .all(groupId, afterId, limit);
+}
+
+// Newest `limit` messages in ascending order — the "last N" slice an agent
+// needs to catch up on a conversation without paging through history.
+export function lastMessages(groupId, limit = 50) {
+  limit = Math.min(Math.max(1, limit), MESSAGES_PAGE_LIMIT);
+  return db
+    .prepare(
+      `SELECT * FROM (
+         SELECT m.*, u.username, u.display_name FROM messages m
+         JOIN users u ON u.id = m.user_id
+         WHERE m.group_id = ?
+         ORDER BY m.id DESC LIMIT ?
+       ) ORDER BY id ASC`
+    )
+    .all(groupId, limit);
 }
 
 // --- checkpoints ----------------------------------------------------------
