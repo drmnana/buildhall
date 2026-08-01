@@ -436,9 +436,12 @@ function closeSocketsForSession(sessionId) {
     } catch {
       /* already closing */
     }
-    // A peer that ignores the close frame would keep the socket half-open, so
-    // drop it outright rather than trusting a well-behaved client.
-    ws.terminate();
+    // Give the close frame a moment to flush before killing the socket.
+    // Terminating immediately means the peer sees code 1005 (no status) rather
+    // than 4401, so a well-behaved client cannot tell "you were revoked" from
+    // "the network blipped" and will reconnect forever. A peer that ignores the
+    // frame still gets dropped when the timer fires.
+    setTimeout(() => ws.terminate(), 250).unref?.();
   }
   return closed;
 }

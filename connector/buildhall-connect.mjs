@@ -208,6 +208,14 @@ async function connect() {
 async function run() {
   try { await connect(); }
   catch (err) {
+    // A 401 means this token is not valid, and no amount of retrying will
+    // change that. Relying only on the websocket close code was not enough:
+    // behind a TLS-terminating proxy the 4401 frame is often lost and the peer
+    // sees 1005, so the terminal case has to be detected here too.
+    if (/-> 401/.test(err.message)) {
+      log('bridge token rejected (revoked or logged out) — exiting');
+      process.exit(3);
+    }
     log('connect failed:', err.message);
     setTimeout(run, backoff);
     backoff = Math.min(backoff * 2, 30000);
