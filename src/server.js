@@ -8,7 +8,18 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { db } from './db.js';
 import {
-  findOrCreateUser,
+  createSession,
+  createBridgeToken,
+  createUserWithPassword,
+  getUserByUsername,
+  listBridgeTokens,
+  publicUser,
+  resolveToken,
+  revokeBridgeToken,
+  revokeSession,
+  verifyPassword,
+} from './auth.js';
+import {
   getUser,
   createGroup,
   getGroupBySlug,
@@ -59,23 +70,107 @@ app.use(express.static(path.join(brandDir, 'favicon')));
 app.use(express.static(path.join(brandDir, 'color')));
 app.use(express.static(path.join(brandDir, 'logo', 'svg')));
 
-// --- dev auth: client sends its username, gets back the user record --------
+// --- auth ------------------------------------------------------------------
+// Checkpoint 7: identity is never asserted by the client. The caller presents
+// `Authorization: Bearer <token>` and the server resolves it against stored
+// digests. The old `x-user-id` header is not read anywhere and carries no
+// privilege — see verify-checkpoint7.mjs, which asserts that explicitly.
 
-app.post('/api/session', (req, res) => {
+const USERNAME_RE = /^[a-z0-9_-]{2,32}$/i;
+const MIN_PASSWORD_LENGTH = 10;
+
+function bearerToken(req) {
+  const header = req.get('authorization') || '';
+  const [scheme, value] = header.split(' ');
+  return /^bearer$/i.test(scheme || '') ? (value || '').trim() : null;
+}
+
+app.post('/api/auth/register', (req, res) => {
   const username = String(req.body?.username || '').trim();
-  if (!/^[a-z0-9_-]{2,32}$/i.test(username)) {
+  const password = String(req.body?.password || '');
+  if (!USERNAME_RE.test(username)) {
     return res.status(400).json({ error: 'username must be 2-32 chars: letters, digits, _ or -' });
   }
-  res.json({ user: findOrCreateUser(username) });
+  if (password.length < MIN_PASSWORD_LENGTH) {
+    return res.status(400).json({ error: `password must be at least ${MIN_PASSWORD_LENGTH} characters` });
+  }
+  // Taken means taken, including legacy passwordless rows. Letting a caller
+  // set a password on an existing account would be account takeover.
+  if (getUserByUsername(username)) return res.status(409).json({ error: 'username already taken' });
+  const user = createUserWithPassword(username, password);
+  const { token } = createSession(user.id);
+  res.status(201).json({ user: publicUser(user), token });
 });
 
-// Every API call below identifies the caller via x-user-id (dev only).
+app.post('/api/auth/login', (req, res) => {
+  const username = String(req.body?.username || '').trim();
+  const password = String(req.body?.password || '');
+  const user = getUserByUsername(username);
+  // One generic failure for unknown user, legacy NULL hash, and wrong
+  // password, so the response cannot be used to enumerate accounts.
+  if (!user || !verifyPassword(password, user.password_hash)) {
+    return res.status(401).json({ error: 'invalid username or password' });
+  }
+  const { token } = createSession(user.id);
+  res.json({ user: publicUser(user), token });
+});
+
 function requireUser(req, res, next) {
-  const user = getUser(Number(req.get('x-user-id')));
-  if (!user) return res.status(401).json({ error: 'unknown user — create a session first' });
-  req.user = user;
+  const identity = resolveToken(bearerToken(req));
+  if (!identity) return res.status(401).json({ error: 'authentication required' });
+  req.user = identity.user;
+  req.identity = identity;
   next();
 }
+
+/** Bridge tokens may read and post, but must not manage the session itself. */
+function requireSessionToken(req, res, next) {
+  if (req.identity.kind !== 'session') {
+    return res.status(403).json({ error: 'this endpoint requires a login session, not a bridge token' });
+  }
+  next();
+}
+
+app.get('/api/auth/me', requireUser, (req, res) => {
+  res.json({
+    user: publicUser(req.user),
+    tokenKind: req.identity.kind,
+    agentName: req.identity.agentName,
+  });
+});
+
+app.post('/api/auth/logout', requireUser, requireSessionToken, (req, res) => {
+  const { revokedBridgeTokenIds } = revokeSession(req.identity.sessionId);
+  // Revoking rows does not disconnect anyone: sockets already open would keep
+  // streaming. Tear them down here so "log out" genuinely severs the agent.
+  const closed = closeSocketsForSession(req.identity.sessionId);
+  res.json({ ok: true, revokedBridgeTokens: revokedBridgeTokenIds.length, closedConnections: closed });
+});
+
+// --- bridge tokens (agent/connector credentials) ---------------------------
+
+app.get('/api/auth/bridge-tokens', requireUser, requireSessionToken, (req, res) => {
+  res.json({ bridgeTokens: listBridgeTokens(req.identity.sessionId) });
+});
+
+app.post('/api/auth/bridge-tokens', requireUser, requireSessionToken, (req, res) => {
+  const agentName = String(req.body?.agentName || '').trim();
+  if (!/^[a-z0-9 _.-]{2,32}$/i.test(agentName)) {
+    return res.status(400).json({ error: 'agentName must be 2-32 chars: letters, digits, space, _ . or -' });
+  }
+  const { token, bridgeTokenId } = createBridgeToken(req.identity.sessionId, req.user.id, agentName);
+  // Returned once and never retrievable again — only its digest is stored.
+  res.status(201).json({ bridgeTokenId, agentName, token });
+});
+
+app.delete('/api/auth/bridge-tokens/:id', requireUser, requireSessionToken, (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: 'invalid bridge token id' });
+  if (!revokeBridgeToken(req.identity.sessionId, id)) {
+    return res.status(404).json({ error: 'no such live bridge token on this session' });
+  }
+  res.json({ ok: true, closedConnections: closeSocketsForBridgeToken(id) });
+});
 
 // --- groups ----------------------------------------------------------------
 
@@ -175,13 +270,14 @@ app.get('/api/groups/:slug/context', requireUser, requireMember, (req, res) => {
 
 app.post('/api/groups/:slug/messages', requireUser, requireMember, (req, res) => {
   if (!req.membership) return res.status(403).json({ error: 'join the group to post' });
-  const { actorType = 'human', agentName, kind, text, pinnedMessageId } = req.body ?? {};
-  if (!['human', 'ai'].includes(actorType)) {
-    return res.status(400).json({ error: "actorType must be 'human' or 'ai'" });
-  }
-  if (actorType === 'ai' && !/^[a-z0-9 _.-]{2,32}$/i.test(String(agentName || '').trim())) {
-    return res.status(400).json({ error: 'agentName is required for ai messages (2-32 chars)' });
-  }
+  const { kind, text, pinnedMessageId } = req.body ?? {};
+  // Attribution is derived from the credential, never from the request body.
+  // Previously a caller could set actorType/agentName freely, so any human
+  // could post as any agent — the same class of spoof as the old x-user-id
+  // header. A bridge token posts as its own agent; a login session posts as
+  // the human. Neither can claim to be the other.
+  const actorType = req.identity.kind === 'bridge' ? 'ai' : 'human';
+  const agentName = req.identity.kind === 'bridge' ? req.identity.agentName : null;
   if (kind != null && !['message', 'checkpoint'].includes(kind)) {
     return res.status(400).json({ error: "kind must be 'message' or 'checkpoint'" });
   }
@@ -207,7 +303,7 @@ app.post('/api/groups/:slug/messages', requireUser, requireMember, (req, res) =>
     groupId: req.group.id,
     userId: req.user.id,
     actorType,
-    agentName: actorType === 'ai' ? agentName.trim() : null,
+    agentName,
     kind,
     text: body,
     pinnedMessageId: pinId,
@@ -217,35 +313,115 @@ app.post('/api/groups/:slug/messages', requireUser, requireMember, (req, res) =>
 });
 
 // --- websocket fan-out -----------------------------------------------------
-// Clients connect to /ws?groupId=N&userId=M and receive every new message in
-// that group. Posting still goes through the REST API so validation and
-// attribution live in one place.
+// Clients connect to /ws?groupId=N and authenticate with the same bearer token
+// as the REST API, passed via the WebSocket subprotocol rather than the query
+// string — browsers cannot set headers on a WebSocket handshake, and a token
+// in a URL leaks into access logs, proxy logs and Referer headers.
+//
+// Every socket records the session (and bridge token, if any) it was opened
+// with, which is what lets logout hunt down and close live connections.
 
 const server = createServer(app);
-const wss = new WebSocketServer({ server, path: '/ws' });
+const WS_TOKEN_PROTOCOL = 'bh-token';
+// `noServer` so authentication runs during the HTTP upgrade. Rejecting inside
+// the 'connection' event would be too late: the handshake would already have
+// completed and an unauthenticated peer would see a briefly-open socket.
+const wss = new WebSocketServer({
+  noServer: true,
+  // Echo back only our marker, never the token itself.
+  handleProtocols: (protocols) => (protocols.has(WS_TOKEN_PROTOCOL) ? WS_TOKEN_PROTOCOL : false),
+});
 
-/** @type {Map<number, Set<WebSocket>>} */
+/** @type {Map<number, Set<WebSocket>>} groupId -> sockets */
 const rooms = new Map();
+/** @type {Set<WebSocket>} every authenticated socket, for targeted teardown */
+const liveSockets = new Set();
 
-wss.on('connection', (ws, req) => {
-  const params = new URL(req.url, 'http://localhost').searchParams;
-  const groupId = Number(params.get('groupId'));
-  const user = getUser(Number(params.get('userId')));
-  if (!groupId || !user) return ws.close(4001, 'groupId and userId required');
+function tokenFromHandshake(req) {
+  // Sent as: new WebSocket(url, ['bh-token', '<token>'])
+  const raw = req.headers['sec-websocket-protocol'];
+  if (!raw) return null;
+  const parts = String(raw).split(',').map((s) => s.trim());
+  const idx = parts.indexOf(WS_TOKEN_PROTOCOL);
+  return idx === -1 ? null : parts[idx + 1] || null;
+}
+
+function rejectUpgrade(socket, status, reason) {
+  socket.write(`HTTP/1.1 ${status} ${reason}\r\nConnection: close\r\n\r\n`);
+  socket.destroy();
+}
+
+server.on('upgrade', (req, socket, head) => {
+  let url;
+  try {
+    url = new URL(req.url, 'http://localhost');
+  } catch {
+    return rejectUpgrade(socket, 400, 'Bad Request');
+  }
+  if (url.pathname !== '/ws') return rejectUpgrade(socket, 404, 'Not Found');
+
+  const identity = resolveToken(tokenFromHandshake(req));
+  if (!identity) return rejectUpgrade(socket, 401, 'Unauthorized');
+
+  const groupId = Number(url.searchParams.get('groupId'));
+  if (!groupId) return rejectUpgrade(socket, 400, 'Bad Request');
   const group = getGroupById(groupId);
-  if (!group) return ws.close(4004, 'no such group');
-  if (group.visibility === 'private' && !getMembership(groupId, user.id)) {
-    return ws.close(4003, 'not a member of this group');
+  if (!group) return rejectUpgrade(socket, 404, 'Not Found');
+  if (group.visibility === 'private' && !getMembership(groupId, identity.user.id)) {
+    return rejectUpgrade(socket, 403, 'Forbidden');
   }
 
-  let room = rooms.get(groupId);
-  if (!room) rooms.set(groupId, (room = new Set()));
-  room.add(ws);
-  ws.on('close', () => {
-    room.delete(ws);
-    if (room.size === 0) rooms.delete(groupId);
+  wss.handleUpgrade(req, socket, head, (ws) => {
+    ws.bhSessionId = identity.sessionId;
+    ws.bhBridgeTokenId = identity.bridgeTokenId;
+    ws.bhGroupId = groupId;
+    liveSockets.add(ws);
+
+    let room = rooms.get(groupId);
+    if (!room) rooms.set(groupId, (room = new Set()));
+    room.add(ws);
+    ws.on('close', () => {
+      liveSockets.delete(ws);
+      room.delete(ws);
+      if (room.size === 0) rooms.delete(groupId);
+    });
+    wss.emit('connection', ws, req);
   });
 });
+
+/** Close every live socket opened with this session or any of its children. */
+function closeSocketsForSession(sessionId) {
+  let closed = 0;
+  for (const ws of liveSockets) {
+    if (ws.bhSessionId !== sessionId) continue;
+    closed++;
+    try {
+      ws.close(4401, 'session revoked');
+    } catch {
+      /* already closing */
+    }
+    // A peer that ignores the close frame would keep the socket half-open, so
+    // drop it outright rather than trusting a well-behaved client.
+    ws.terminate();
+  }
+  return closed;
+}
+
+/** Same, scoped to a single revoked bridge token. */
+function closeSocketsForBridgeToken(bridgeTokenId) {
+  let closed = 0;
+  for (const ws of liveSockets) {
+    if (ws.bhBridgeTokenId !== bridgeTokenId) continue;
+    closed++;
+    try {
+      ws.close(4401, 'bridge token revoked');
+    } catch {
+      /* already closing */
+    }
+    ws.terminate();
+  }
+  return closed;
+}
 
 function broadcast(groupId, payload) {
   const room = rooms.get(groupId);

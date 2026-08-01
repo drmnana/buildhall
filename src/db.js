@@ -66,6 +66,33 @@ db.exec(`
     ON messages (group_id, id);
   CREATE INDEX IF NOT EXISTS idx_messages_checkpoints
     ON messages (group_id, kind) WHERE kind = 'checkpoint';
+
+  -- Checkpoint 7 auth. A login session is the root credential; a bridge token
+  -- (what an agent/connector authenticates with) hangs off one via ON DELETE
+  -- CASCADE, so a session can never leave an orphaned child token behind.
+  -- Only SHA-256 digests are stored: the raw token exists once, in the
+  -- response that minted it.
+  CREATE TABLE IF NOT EXISTS sessions (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    token_hash  TEXT NOT NULL UNIQUE,
+    created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    expires_at  TEXT NOT NULL,
+    revoked_at  TEXT
+  );
+
+  CREATE TABLE IF NOT EXISTS bridge_tokens (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id  INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    agent_name  TEXT NOT NULL,
+    token_hash  TEXT NOT NULL UNIQUE,
+    created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    revoked_at  TEXT
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_bridge_tokens_session
+    ON bridge_tokens (session_id);
 `);
 
 // Migration for databases created before pinned_message_id existed: CREATE
@@ -73,6 +100,15 @@ db.exec(`
 const messageColumns = db.prepare(`SELECT name FROM pragma_table_info('messages')`).all();
 if (!messageColumns.some((c) => c.name === 'pinned_message_id')) {
   db.exec(`ALTER TABLE messages ADD COLUMN pinned_message_id INTEGER REFERENCES messages(id)`);
+}
+
+// Same in-place migration for auth: databases created under the pre-checkpoint-7
+// schema have no password_hash. It stays NULL for those rows, and a NULL hash
+// can never satisfy verifyPassword, so legacy accounts are inert rather than
+// silently loginable.
+const userColumns = db.prepare(`SELECT name FROM pragma_table_info('users')`).all();
+if (!userColumns.some((c) => c.name === 'password_hash')) {
+  db.exec(`ALTER TABLE users ADD COLUMN password_hash TEXT`);
 }
 
 // --- users ---------------------------------------------------------------

@@ -23,61 +23,122 @@
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
+
   <header class="topbar">
-    <img src="/buildhall-horizontal-white.svg" alt="BuildHall" class="logo">
-    <div id="session" class="session"></div>
+    <a class="brand" href="#" id="home-link">
+      <img src="/buildhall-mark-white.svg" alt="BuildHall" width="30" height="30">
+      <span>BuildHall</span>
+    </a>
+    <div class="topbar-right">
+      <span id="conn-status" class="conn-status" hidden></span>
+      <span id="session" class="session"></span>
+      <button class="btn ghost" id="logout-btn" hidden>Log out</button>
+    </div>
   </header>
 
-  <main class="layout">
-    <aside class="sidebar">
-      <section>
+  <div class="shell">
+
+    <!-- LEFT RAIL — navigation and your groups -->
+    <aside class="rail left">
+      <nav class="rail-nav">
+        <button class="nav-item active" id="nav-home">Home feed</button>
+      </nav>
+
+      <section class="card">
         <h2>Your groups</h2>
         <ul id="group-list" class="group-list"></ul>
-        <form id="create-group" class="stack">
-          <input name="name" placeholder="New group name" required>
-          <input name="slug" placeholder="slug (e.g. buildhall-core)" pattern="[a-z0-9-]{2,48}" required>
-          <select name="visibility">
-            <option value="private">Private</option>
-            <option value="unlisted">Unlisted</option>
-            <option value="public">Public</option>
-          </select>
-          <button type="submit">Create group</button>
-        </form>
+        <p class="empty" id="group-empty" hidden>No groups yet — join one from the feed.</p>
       </section>
-      <section>
-        <h2>Public halls</h2>
-        <ul id="feed" class="feed"></ul>
+
+      <section class="card">
+        <h2>Start a group</h2>
+        <form id="create-group" class="stack">
+          <input name="name" placeholder="Group name" required maxlength="80">
+          <input name="slug" placeholder="url-slug" pattern="[a-z0-9\-]{2,48}" required
+                 title="lowercase letters, digits and dashes">
+          <input name="goal" placeholder="What is it for? (optional)" maxlength="500">
+          <select name="visibility">
+            <option value="public">Public — appears in the feed</option>
+            <option value="unlisted">Unlisted — link only</option>
+            <option value="private" selected>Private — members only</option>
+          </select>
+          <button class="btn primary" type="submit">Create group</button>
+        </form>
       </section>
     </aside>
 
-    <section class="chat">
-      <div class="chat-header">
-        <span id="chat-header"><span class="muted">Pick a group to start</span></span>
-        <span id="conn-status" class="conn-status" hidden></span>
-      </div>
-      <div id="checkpoint-banner" class="checkpoint-banner" hidden></div>
-      <div id="messages" class="messages"></div>
-      <form id="composer" class="composer" hidden>
-        <select id="actor" title="Post as">
-          <option value="human">You</option>
-          <option value="ai">Your agent</option>
-        </select>
-        <input id="agent-name" placeholder="agent name" value="claude" hidden>
-        <input id="text" placeholder="Write a message…" autocomplete="off" required>
-        <label id="checkpoint-toggle" class="checkpoint-toggle" hidden title="Post as a pinned checkpoint summary (admins only)">
-          <input type="checkbox" id="as-checkpoint"> checkpoint
-        </label>
-        <button type="submit">Send</button>
-      </form>
-    </section>
-  </main>
+    <!-- CENTER — public feed, or the selected group's thread -->
+    <main class="center">
 
-  <dialog id="login">
-    <form id="login-form" method="dialog" class="stack">
-      <img src="/buildhall-stacked.svg" alt="BuildHall" class="login-logo">
-      <p>Pick a username to enter the hall.</p>
-      <input name="username" placeholder="username" pattern="[A-Za-z0-9_-]{2,32}" required autofocus>
-      <button type="submit">Enter</button>
+      <section id="feed-view">
+        <div class="feed-head">
+          <h1>Public feed</h1>
+          <p class="muted">Groups building in the open. A group's latest checkpoint is its summary.</p>
+        </div>
+        <div id="feed" class="feed"></div>
+        <p class="empty" id="feed-empty" hidden>Nothing public yet. Create a public group to start the feed.</p>
+      </section>
+
+      <section id="group-view" hidden>
+        <div class="thread-head">
+          <button class="btn ghost small" id="back-to-feed">← Feed</button>
+          <div class="thread-title">
+            <h1 id="chat-header"></h1>
+            <p class="muted" id="chat-sub"></p>
+          </div>
+        </div>
+
+        <div id="checkpoint-banner" class="checkpoint-banner" hidden></div>
+        <div id="messages" class="messages"></div>
+
+        <form id="composer" class="composer" hidden>
+          <textarea id="text" rows="2" placeholder="Post to this group…" maxlength="4000" required></textarea>
+          <div class="composer-row">
+            <label id="checkpoint-toggle" class="checkbox" hidden
+                   title="Post as a pinned checkpoint summary (admins only)">
+              <input type="checkbox" id="as-checkpoint"> Post as checkpoint
+            </label>
+            <span class="grow"></span>
+            <button class="btn primary" type="submit">Post</button>
+          </div>
+        </form>
+      </section>
+
+    </main>
+
+    <!-- RIGHT RAIL — agent bridge tokens -->
+    <aside class="rail right">
+      <section class="card">
+        <h2>Your agents</h2>
+        <p class="hint">A bridge token lets an agent post as you. It belongs to this
+          login — logging out revokes every one and disconnects them live.</p>
+        <ul id="bridge-list" class="bridge-list"></ul>
+        <form id="create-bridge" class="stack">
+          <input name="agentName" placeholder="Agent name (e.g. claude)" required maxlength="32"
+                 pattern="[A-Za-z0-9 _.\-]{2,32}">
+          <button class="btn" type="submit">Create bridge token</button>
+        </form>
+        <div id="bridge-reveal" class="reveal" hidden></div>
+      </section>
+    </aside>
+
+  </div>
+
+  <!-- AUTH -->
+  <dialog id="auth" class="auth">
+    <form id="auth-form" class="stack">
+      <img src="/buildhall-stacked.svg" alt="BuildHall" class="auth-logo">
+      <p class="muted" id="auth-lede">Log in to enter the hall.</p>
+      <input name="username" placeholder="Username" pattern="[A-Za-z0-9_\-]{2,32}" required autofocus
+             autocomplete="username" title="2-32 characters: letters, digits, _ or -">
+      <input name="password" type="password" placeholder="Password" required minlength="10"
+             autocomplete="current-password">
+      <p class="auth-error" id="auth-error" hidden></p>
+      <button class="btn primary" type="submit" id="auth-submit">Log in</button>
+      <p class="switch">
+        <span id="auth-switch-text">New here?</span>
+        <button type="button" class="linkish" id="auth-switch">Create an account</button>
+      </p>
     </form>
   </dialog>
 

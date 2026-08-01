@@ -24,11 +24,12 @@ function check(name, ok, detail = '') {
 }
 
 async function api(method, url, { user, body } = {}) {
+  // `user` is now a bearer token (checkpoint 7 removed the x-user-id header).
   const res = await fetch(base + url, {
     method,
     headers: {
       'content-type': 'application/json',
-      ...(user ? { 'x-user-id': String(user) } : {}),
+      ...(user ? { authorization: `Bearer ${user}` } : {}),
     },
     body: body ? JSON.stringify(body) : undefined,
   });
@@ -48,15 +49,19 @@ try {
   }
   if (!up) throw new Error('server did not start:\n' + serverLog);
 
-  const sess = await api('POST', '/api/session', { body: { username: 'verifier' } });
-  const userId = sess.json?.user?.id;
-  check('session created', sess.status === 200 || sess.status === 201, `status ${sess.status}`);
+  const sess = await api('POST', '/api/auth/register', {
+    body: { username: 'verifier', password: 'verify-pass-123' },
+  });
+  const userId = sess.json?.token;
+  check('session created', sess.status === 201 && !!userId, `status ${sess.status}`);
 
   const grp = await api('POST', '/api/groups', {
     user: userId,
     body: { slug: 'verify-cp5', name: 'Verify CP5' },
   });
   check('group created', grp.status === 201, `status ${grp.status}`);
+
+  await api('POST', '/api/groups/verify-cp5/join', { user: userId });
 
   const msg = await api('POST', '/api/groups/verify-cp5/messages', {
     user: userId,
