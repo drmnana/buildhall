@@ -11,6 +11,7 @@ import {
   getUser,
   createGroup,
   getGroupBySlug,
+  getGroupById,
   listGroupsForUser,
   getMembership,
   joinGroup,
@@ -142,6 +143,11 @@ wss.on('connection', (ws, req) => {
   const groupId = Number(params.get('groupId'));
   const user = getUser(Number(params.get('userId')));
   if (!groupId || !user) return ws.close(4001, 'groupId and userId required');
+  const group = getGroupById(groupId);
+  if (!group) return ws.close(4004, 'no such group');
+  if (group.visibility === 'private' && !getMembership(groupId, user.id)) {
+    return ws.close(4003, 'not a member of this group');
+  }
 
   let room = rooms.get(groupId);
   if (!room) rooms.set(groupId, (room = new Set()));

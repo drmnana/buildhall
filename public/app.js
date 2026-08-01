@@ -91,8 +91,11 @@ $('#create-group').addEventListener('submit', async (e) => {
 
 // --- messages --------------------------------------------------------------
 
+let lastMessageId = 0;
+
 async function selectGroup(group) {
   currentGroup = group;
+  lastMessageId = 0;
   $('#chat-header').textContent = group.name;
   $('#composer').hidden = false;
   $('#messages').innerHTML = '';
@@ -103,6 +106,9 @@ async function selectGroup(group) {
 }
 
 function renderMessage(m) {
+  // the socket can replay something we already fetched during a reconnect
+  if (m.id <= lastMessageId) return;
+  lastMessageId = m.id;
   const div = document.createElement('div');
   div.className = `msg ${m.actor_type}${m.kind === 'checkpoint' ? ' checkpoint' : ''}`;
   const author = m.actor_type === 'ai'
@@ -121,12 +127,27 @@ function renderMessage(m) {
 function connectSocket(group) {
   socket?.close();
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-  socket = new WebSocket(`${proto}://${location.host}/ws?groupId=${group.id}&userId=${user.id}`);
-  socket.addEventListener('message', (e) => {
+  const ws = new WebSocket(`${proto}://${location.host}/ws?groupId=${group.id}&userId=${user.id}`);
+  socket = ws;
+  ws.addEventListener('message', (e) => {
     const payload = JSON.parse(e.data);
     if (payload.type === 'message' && currentGroup?.id === group.id) {
       renderMessage(payload.message);
     }
+  });
+  ws.addEventListener('close', (e) => {
+    // 4xxx closes are auth/validation rejections — reconnecting won't help
+    if (socket !== ws || currentGroup?.id !== group.id || e.code >= 4000) return;
+    setTimeout(async () => {
+      if (socket !== ws || currentGroup?.id !== group.id) return;
+      try {
+        // fetch anything missed while disconnected, then resubscribe
+        const { messages } = await api(`/groups/${group.slug}/messages?after=${lastMessageId}`);
+        if (currentGroup?.id !== group.id) return;
+        messages.forEach(renderMessage);
+      } catch { /* server still down — the next close event retries */ }
+      connectSocket(group);
+    }, 2000);
   });
 }
 

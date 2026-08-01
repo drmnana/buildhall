@@ -102,6 +102,10 @@ export function getGroupBySlug(slug) {
   return db.prepare('SELECT * FROM groups WHERE slug = ?').get(slug);
 }
 
+export function getGroupById(id) {
+  return db.prepare('SELECT * FROM groups WHERE id = ?').get(id);
+}
+
 export function listGroupsForUser(userId) {
   return db
     .prepare(
