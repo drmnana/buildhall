@@ -153,16 +153,16 @@ function connectSocket(group) {
     if (socket !== ws || currentGroup?.id !== group.id) return;
     reconnectDelay = RECONNECT_BASE_MS;
     setConnStatus('live', 'live');
-    if (lastMessageId > 0) {
-      backfilling = true;
-      try {
-        // fetch anything missed while disconnected; renderMessage drops duplicates
-        const { messages } = await api(`/groups/${group.slug}/messages?after=${lastMessageId}`);
-        if (currentGroup?.id === group.id) messages.forEach(renderMessage);
-      } catch { /* socket is live, so new messages still arrive; backfill retries next reconnect */ }
-      backfilling = false;
-      heldDuringBackfill.splice(0).forEach(renderMessage);
-    }
+    // always backfill, even from 0: a brand-new group can miss a message posted
+    // between the initial REST fetch and this socket opening
+    backfilling = true;
+    try {
+      // fetch anything missed while disconnected; renderMessage drops duplicates
+      const { messages } = await api(`/groups/${group.slug}/messages?after=${lastMessageId}`);
+      if (currentGroup?.id === group.id) messages.forEach(renderMessage);
+    } catch { /* socket is live, so new messages still arrive; backfill retries next reconnect */ }
+    backfilling = false;
+    heldDuringBackfill.splice(0).forEach(renderMessage);
   });
   ws.addEventListener('message', (e) => {
     const payload = JSON.parse(e.data);
