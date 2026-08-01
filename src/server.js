@@ -6,6 +6,7 @@ import { createServer } from 'node:http';
 import { WebSocketServer, WebSocket } from 'ws';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { db } from './db.js';
 import {
   findOrCreateUser,
   getUser,
@@ -28,6 +29,27 @@ const PORT = process.env.PORT || 3000;
 
 const app = express();
 app.use(express.json({ limit: '256kb' }));
+
+// --- health check ----------------------------------------------------------
+// Declared before the static middleware so a file named health/ in public or
+// brand can never shadow it. Render polls this to gate deploys and to restart
+// unhealthy instances, so it also pings SQLite: a process that is up but whose
+// database is unreachable is not actually serving, and should not report ok.
+app.get('/health', (_req, res) => {
+  let dbOk = true;
+  try {
+    db.prepare('SELECT 1').get();
+  } catch {
+    dbOk = false;
+  }
+  res.status(dbOk ? 200 : 503).json({
+    status: dbOk ? 'ok' : 'degraded',
+    db: dbOk ? 'ok' : 'unreachable',
+    uptime: Math.round(process.uptime()),
+    timestamp: new Date().toISOString(),
+  });
+});
+
 app.use(express.static(path.join(__dirname, '..', 'public')));
 
 // Brand assets are served straight from brand/ (read-only originals from the

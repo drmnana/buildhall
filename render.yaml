@@ -1,0 +1,42 @@
+# Render Blueprint — Buildhall sync server
+# Docs: https://render.com/docs/blueprint-spec
+#
+# NOTE ON PLAN: `starter` is deliberate, not a default. Persistent disks are not
+# available on the free tier, and a free instance also spins down when idle and
+# loses its filesystem on every deploy — which would wipe the SQLite database
+# each time. Do not change this to `free` without first moving off node:sqlite.
+#
+# NOTE ON SECRETS: nothing secret belongs in this file. Any future admin
+# credential or API key should be added in the Render dashboard under
+# Environment (or declared here with `sync: false`, which commits the key name
+# but never the value).
+
+services:
+  - type: web
+    name: buildhall
+    runtime: node
+    plan: starter          # paid tier — required for the persistent disk below
+    region: oregon         # change if you want a different region; disks are region-bound
+    branch: main
+    autoDeploy: true
+
+    buildCommand: npm install
+    startCommand: npm start
+
+    # Render polls this to decide when a deploy goes live and whether to
+    # restart the instance. Returns 200 when SQLite is reachable, 503 if not.
+    healthCheckPath: /health
+
+    envVars:
+      # node:sqlite requires Node >= 22.5. "22" tracks the latest 22.x release
+      # so security patches land without a manual bump.
+      - key: NODE_VERSION
+        value: "22"
+      # SQLite lives on the persistent disk, NOT in the ephemeral build dir.
+      - key: DATA_DIR
+        value: /var/data
+
+    disk:
+      name: buildhall-data
+      mountPath: /var/data
+      sizeGB: 1
