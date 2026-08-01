@@ -4,6 +4,8 @@ const $ = (sel) => document.querySelector(sel);
 
 let user = JSON.parse(localStorage.getItem('bh-user') || 'null');
 let currentGroup = null;
+let currentRole = null;
+let myGroups = [];
 let socket = null;
 
 const api = async (path, options = {}) => {
@@ -46,6 +48,7 @@ function renderSession() {
 
 async function loadGroups() {
   const { groups } = await api('/groups');
+  myGroups = groups;
   const list = $('#group-list');
   list.innerHTML = '';
   for (const g of groups) {
@@ -101,17 +104,54 @@ async function selectGroup(group) {
   $('#composer').hidden = false;
   $('#messages').innerHTML = '';
   await loadGroups();
-  const { messages } = await api(`/groups/${group.slug}/messages`);
+  currentRole = myGroups.find((g) => g.id === group.id)?.role ?? null;
+  $('#checkpoint-toggle').hidden = currentRole !== 'admin';
+  $('#as-checkpoint').checked = false;
+  const [{ messages }, { checkpoints }] = await Promise.all([
+    api(`/groups/${group.slug}/messages`),
+    api(`/groups/${group.slug}/checkpoints`),
+  ]);
+  if (currentGroup?.id !== group.id) return;
+  renderCheckpointBanner(checkpoints[0] ?? null);
   messages.forEach(renderMessage);
   connectSocket(group);
+}
+
+// The banner is the group's standing summary: the latest checkpoint, always
+// visible above the message list. Clicking it jumps to the pinned message.
+function renderCheckpointBanner(cp) {
+  const banner = $('#checkpoint-banner');
+  if (!cp) {
+    banner.hidden = true;
+    return;
+  }
+  banner.hidden = false;
+  banner.classList.toggle('clickable', !!cp.pinned_message_id);
+  banner.title = cp.pinned_message_id ? 'Jump to the pinned message' : '';
+  banner.innerHTML =
+    `<span class="badge">checkpoint</span>` +
+    `<span class="cp-text">${escapeHtml(cp.text)}</span>` +
+    `<span class="muted cp-when">${new Date(cp.created_at).toLocaleString()}</span>`;
+  banner.onclick = cp.pinned_message_id
+    ? () => {
+        const el = $(`#messages [data-id="${cp.pinned_message_id}"]`);
+        if (!el) return alert('The pinned message is older than the loaded history.');
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        el.classList.add('flash');
+        setTimeout(() => el.classList.remove('flash'), 1500);
+      }
+    : null;
 }
 
 function renderMessage(m) {
   // the socket can replay something we already fetched during a reconnect
   if (m.id <= lastMessageId) return;
   lastMessageId = m.id;
+  // checkpoint rows are messages, so a live one is also the new latest summary
+  if (m.kind === 'checkpoint') renderCheckpointBanner(m);
   const div = document.createElement('div');
   div.className = `msg ${m.actor_type}${m.kind === 'checkpoint' ? ' checkpoint' : ''}`;
+  div.dataset.id = m.id;
   const author = m.actor_type === 'ai'
     ? `${escapeHtml(m.agent_name)} <span class="muted">for ${escapeHtml(m.username)}</span>`
     : escapeHtml(m.display_name || m.username);
@@ -198,16 +238,22 @@ $('#composer').addEventListener('submit', async (e) => {
   const actorType = $('#actor').value;
   const text = $('#text').value.trim();
   if (!text) return;
+  const asCheckpoint = currentRole === 'admin' && $('#as-checkpoint').checked;
   try {
     await api(`/groups/${currentGroup.slug}/messages`, {
       method: 'POST',
       body: JSON.stringify({
         actorType,
         agentName: actorType === 'ai' ? $('#agent-name').value.trim() : undefined,
+        kind: asCheckpoint ? 'checkpoint' : undefined,
+        // a checkpoint summarizes the conversation up to here, so it pins the
+        // newest message at the moment of posting (nothing to pin in an empty group)
+        pinnedMessageId: asCheckpoint && lastMessageId > 0 ? lastMessageId : undefined,
         text,
       }),
     });
     $('#text').value = '';
+    $('#as-checkpoint').checked = false;
   } catch (err) {
     alert(err.message);
   }

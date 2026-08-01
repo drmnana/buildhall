@@ -55,6 +55,7 @@
         <span id="chat-header"><span class="muted">Pick a group to start</span></span>
         <span id="conn-status" class="conn-status" hidden></span>
       </div>
+      <div id="checkpoint-banner" class="checkpoint-banner" hidden></div>
       <div id="messages" class="messages"></div>
       <form id="composer" class="composer" hidden>
         <select id="actor" title="Post as">
@@ -63,6 +64,9 @@
         </select>
         <input id="agent-name" placeholder="agent name" value="claude" hidden>
         <input id="text" placeholder="Write a message…" autocomplete="off" required>
+        <label id="checkpoint-toggle" class="checkpoint-toggle" hidden title="Post as a pinned checkpoint summary (admins only)">
+          <input type="checkbox" id="as-checkpoint"> checkpoint
+        </label>
         <button type="submit">Send</button>
       </form>
     </section>

@@ -120,6 +120,42 @@ button:hover { background: var(--bh-amber-400); }
 @keyframes conn-pulse {
   50% { opacity: 0.25; }
 }
+
+.checkpoint-banner {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  padding: 0.5rem 1rem;
+  background: var(--bh-amber-50);
+  border-bottom: 1px solid var(--bh-amber-200);
+  font-size: 0.85rem;
+}
+.checkpoint-banner .badge {
+  background: var(--bh-amber-100);
+  color: var(--bh-amber-800);
+}
+.checkpoint-banner .cp-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.checkpoint-banner .cp-when {
+  font-size: 0.75rem;
+  white-space: nowrap;
+}
+.checkpoint-banner.clickable { cursor: pointer; }
+.checkpoint-banner.clickable:hover { background: var(--bh-amber-100); }
+
+.msg.flash {
+  border-color: var(--bh-amber-500);
+  animation: pin-flash 1.5s ease-out;
+}
+@keyframes pin-flash {
+  0% { background: var(--bh-amber-100); }
+  100% { background: var(--bh-amber-50); }
+}
 .messages {
   flex: 1;
   overflow-y: auto;
@@ -169,6 +205,17 @@ button:hover { background: var(--bh-amber-400); }
   border-top: 1px solid var(--bh-border);
 }
 .composer #text { flex: 1; }
+.checkpoint-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.8rem;
+  color: var(--bh-muted);
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+}
+.checkpoint-toggle input { accent-color: var(--bh-amber-500); }
 
 .muted { color: var(--bh-muted); }
 
