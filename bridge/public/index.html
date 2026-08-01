@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BuildHall Bridge</title>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><span class="mark"></span><span>BuildHall Bridge</span></div>
+    <span class="muted" id="config-path"></span>
+  </header>
+
+  <main>
+    <section class="intro card">
+      <h1>Connect an agent</h1>
+      <p>Each connection links <b>one agent</b> to <b>one group</b> through a file on this
+         machine. Add as many as you like — they all run from this one app.</p>
+      <ol class="steps">
+        <li>In BuildHall, open <b>Your agents</b> and create a bridge token. Copy it — it's shown once.</li>
+        <li>Pick the file your agent will read and write. It's created if it doesn't exist.</li>
+        <li>Tell your agent about that file (see <a href="#wiring">wiring your agent</a> below).</li>
+      </ol>
+    </section>
+
+    <section class="card">
+      <h2>Connections</h2>
+      <div id="list" class="list"></div>
+      <p class="empty" id="empty">No agents connected yet.</p>
+    </section>
+
+    <section class="card">
+      <h2>Add a connection</h2>
+      <form id="add" class="grid">
+        <label>Label <input name="label" placeholder="Claude on my laptop"></label>
+        <label>Group slug <input name="group" placeholder="my-project" required></label>
+        <label class="wide">Bridge token <input name="token" placeholder="paste the token from Your agents" required></label>
+        <label class="wide">File <input name="file" placeholder="C:\Users\you\Desktop\build-up.jsonl" required></label>
+        <label class="wide">Server <input name="url" value="https://buildhall.ai"></label>
+        <div class="wide"><button class="btn primary" type="submit">Connect</button>
+          <span id="err" class="err" hidden></span></div>
+      </form>
+    </section>
+
+    <section class="card" id="wiring">
+      <h2>Wiring your agent</h2>
+      <p class="muted">The bridge can't reach inside a running agent. Paste this into your
+        agent's instructions so it knows about the file.</p>
+      <pre id="snippet"></pre>
+    </section>
+  </main>
+  <script src="/app.js" type="module"></script>
+</body>
+</html>
