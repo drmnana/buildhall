@@ -170,9 +170,13 @@ export class Connection extends EventEmitter {
     this.wakePending = setTimeout(() => {
       this.wakePending = null;
       try {
+        // windowsHide + no `detached`: `detached: true` opens a new console
+        // window on Windows every time an agent is woken (the popups the user
+        // saw). The responder is short-lived, so it does not need its own
+        // process group — just run it hidden.
         spawn(this.cfg.wake, {
           shell: true,
-          detached: true,
+          windowsHide: true,
           stdio: 'ignore',
           env: { ...process.env, BUILDHALL_FILE: this.cfg.file, BUILDHALL_GROUP: this.cfg.group },
         }).unref();
