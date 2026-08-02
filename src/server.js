@@ -4,6 +4,7 @@
 import express from 'express';
 import { createServer } from 'node:http';
 import { WebSocketServer, WebSocket } from 'ws';
+import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { db } from './db.js';
@@ -92,11 +93,22 @@ app.use(express.static(path.join(brandDir, 'logo', 'svg')));
 // fetching these files. The installer downloads the manifest, then each file
 // from /bridge-src, and needs nothing but Node on the user's machine.
 const installerDir = path.join(__dirname, '..', 'installer');
-const BRIDGE_FILES = [
-  'server.mjs', 'connection.mjs', 'responder.mjs',
-  'public/index.html', 'public/styles.css', 'public/app.js',
-];
-app.get('/download/manifest.json', (_req, res) => res.json({ files: BRIDGE_FILES }));
+const bridgeSrcDir = path.join(__dirname, '..', 'bridge');
+// Build the manifest from what's actually on disk, so adding a bridge file can
+// never leave the installer fetching a file that imports one it didn't download.
+function bridgeManifest() {
+  const files = [];
+  const walk = (dir, prefix) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) walk(path.join(dir, entry.name), rel);
+      else if (/\.(mjs|js|html|css)$/.test(entry.name)) files.push(rel);
+    }
+  };
+  walk(bridgeSrcDir, '');
+  return files;
+}
+app.get('/download/manifest.json', (_req, res) => res.json({ files: bridgeManifest() }));
 app.use('/bridge-src', express.static(path.join(__dirname, '..', 'bridge'), { index: false }));
 app.get('/download/bridge.ps1', (_req, res) => {
   res.type('text/plain').sendFile(path.join(installerDir, 'bridge-installer.ps1'));

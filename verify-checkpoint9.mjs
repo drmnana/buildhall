@@ -291,6 +291,16 @@ try {
   const manifest = await api(app, 'GET', '/download/manifest.json');
   check('download manifest lists the bridge files',
     manifest.status === 200 && manifest.json?.files?.includes('server.mjs'));
+  // The manifest must include EVERY module the bridge imports, or a fresh
+  // install downloads a server.mjs that imports a file it never fetched.
+  check('manifest includes agent-cli.mjs (imported by server + responder)',
+    manifest.json.files.includes('agent-cli.mjs'), JSON.stringify(manifest.json.files));
+  let allFetch = true;
+  for (const f of manifest.json.files) {
+    const r = await fetch(`${app}/bridge-src/${f}`);
+    if (r.status !== 200) { allFetch = false; break; }
+  }
+  check('every file in the manifest is actually downloadable', allFetch);
   const src = await fetch(`${app}/bridge-src/server.mjs`);
   check('bridge source files are served', src.status === 200 && (await src.text()).includes('BuildHall Bridge'));
   const ps1 = await fetch(`${app}/download/bridge.ps1`);
