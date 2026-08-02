@@ -201,15 +201,18 @@ try {
     testOk.status === 200 && testOk.json?.ok === true && /auto-reply from fake claude/.test(testOk.json?.stdout || ''),
     JSON.stringify(testOk.json));
 
-  // Prove the prompt reaches the CLI on STDIN (the codex-empty-window fix): a
-  // fake that echoes a marker only when stdin is non-empty.
+  // Prove the prompt reaches the CLI as a real ARGUMENT (multi-line safe), and
+  // that the non-interactive permission flags are present — the fix modelled on
+  // the proven local-chat-viewer invocation.
   writeFileSync(path.join(binDir, 'claude'),
-    '#!/bin/sh\nin=$(cat)\nif [ -n "$in" ]; then echo "STDIN_OK len=${#in}"; else echo "NO_STDIN"; fi\n');
+    '#!/bin/sh\necho "ARGS: $*"\n');
   chmodSync(path.join(binDir, 'claude'), 0o755);
-  const stdinTest = await api(bridge, 'POST', '/api/agents/claude/test');
-  check('the prompt is delivered to the CLI on stdin, not as an argument',
-    stdinTest.json?.ok === true && /STDIN_OK len=\d+/.test(stdinTest.json?.stdout || ''),
-    JSON.stringify(stdinTest.json));
+  const argTest = await api(bridge, 'POST', '/api/agents/claude/test');
+  check('the prompt is passed as an argument with permission-bypass flags',
+    argTest.json?.ok === true
+      && /--dangerously-skip-permissions/.test(argTest.json?.stdout || '')
+      && /BuildHall test OK/.test(argTest.json?.stdout || ''),
+    JSON.stringify(argTest.json).slice(0, 200));
   writeFileSync(path.join(binDir, 'claude'), '#!/bin/sh\necho "auto-reply from fake claude"\n');
   chmodSync(path.join(binDir, 'claude'), 0o755);
 

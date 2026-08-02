@@ -284,7 +284,7 @@ async function handle(req, res) {
     if (!KNOWN_AGENTS.some((a) => a.name === name)) return fail(res, 404, 'unknown agent');
     const d = detectAgent(name);
     if (!d.command) return fail(res, 400, d.reason || 'CLI not found');
-    const r = invokeAgent(name, d.command, 'Reply with exactly: BuildHall test OK');
+    const r = invokeAgent(name, d.command, 'Reply with exactly: BuildHall test OK', CONFIG_DIR);
     return ok(res, {
       command: d.command,
       ok: r.ok,

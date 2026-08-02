@@ -11,6 +11,7 @@
 // talk to each other forever: the responder only answers HUMAN-authored
 // messages. Agent chatter is delivered to the file but never replied to.
 import { readFileSync, writeFileSync, existsSync, appendFileSync, statSync, unlinkSync } from 'node:fs';
+import { dirname } from 'node:path';
 import { invokeAgent, log } from './agent-cli.mjs';
 
 const [agent, file, commandOverride] = process.argv.slice(2);
@@ -65,7 +66,7 @@ try {
     incoming.map((l) => `${l.author}: ${l.text}`).join('\n') + '\n\n' +
     `Write your reply to the group. Respond with the message text only — no preamble, no quoting.`;
 
-  const result = invokeAgent(agent, commandOverride, prompt);
+  const result = invokeAgent(agent, commandOverride, prompt, dirname(file));
   if (!result.ok) {
     // Make the failure visible instead of silently not replying. This log is
     // what turns "connected but not responding" into a specific cause.
