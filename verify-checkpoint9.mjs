@@ -195,6 +195,24 @@ try {
   check('guided connection reports live', await waitFor(async () =>
     (await conns()).some((c) => c.group === 'guided-hall' && c.status === 'live')));
 
+  // Test button: run the CLI and surface exactly what it printed.
+  const testOk = await api(bridge, 'POST', '/api/agents/claude/test');
+  check('Test runs the CLI and reports its reply',
+    testOk.status === 200 && testOk.json?.ok === true && /auto-reply from fake claude/.test(testOk.json?.stdout || ''),
+    JSON.stringify(testOk.json));
+
+  // A CLI that exits non-zero / prints nothing must be reported as a problem,
+  // not silently "fine" — this is the "connected but not responding" surface.
+  writeFileSync(path.join(binDir, 'claude'), '#!/bin/sh\necho "boom" 1>&2\nexit 1\n');
+  chmodSync(path.join(binDir, 'claude'), 0o755);
+  const testBad = await api(bridge, 'POST', '/api/agents/claude/test');
+  check('Test reports a failing CLI with its stderr',
+    testBad.status === 200 && testBad.json?.ok === false && /boom/.test(testBad.json?.stderr || ''),
+    JSON.stringify(testBad.json));
+  // restore the working fake for the rest of the suite
+  writeFileSync(path.join(binDir, 'claude'), '#!/bin/sh\necho "auto-reply from fake claude"\n');
+  chmodSync(path.join(binDir, 'claude'), 0o755);
+
   // A human posts; the fake CLI must answer as the agent — the full loop. The
   // group is private (panel default), so the human is the owner: a fresh login
   // session posting as themselves.

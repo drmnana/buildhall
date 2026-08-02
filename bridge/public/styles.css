@@ -44,3 +44,7 @@ select{font:inherit;font-size:.9rem;padding:.5rem .6rem;border:1px solid var(--s
 .newgroup input{width:180px}
 .btn.tiny2{font-size:.8rem;padding:.3rem .6rem;white-space:nowrap}
 .conn code{background:var(--slate100);padding:.05rem .3rem;border-radius:4px;font-size:.8rem}
+
+.testout{font-size:.82rem;line-height:1.5;white-space:pre-wrap;border-radius:8px;padding:.55rem .7rem;margin:.2rem 0 .6rem}
+.testout.good{background:var(--okbg);color:var(--ok)}
+.testout.bad{background:var(--errbg);color:var(--err)}

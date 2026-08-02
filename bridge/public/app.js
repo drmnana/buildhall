@@ -113,6 +113,27 @@ async function loadAgents() {
       };
       el.append(setPath);
     }
+    if (a.installed) {
+      const test = document.createElement('button');
+      test.className = 'btn tiny2';
+      test.textContent = 'Test';
+      test.title = 'Run the AI once and show what it replies';
+      test.onclick = async () => {
+        test.disabled = true; const was = test.textContent; test.textContent = 'Testing…';
+        try {
+          const r = await api(`/api/agents/${a.name}/test`, { method: 'POST' });
+          const box = document.createElement('div');
+          box.className = 'testout ' + (r.ok ? 'good' : 'bad');
+          box.textContent = r.ok
+            ? `OK — the AI replied: ${r.stdout.slice(0, 200)}`
+            : `Problem: ${r.error || 'no reply'}${r.stderr ? `\n${r.stderr.slice(0, 400)}` : ''}`;
+          el.parentElement.insertBefore(box, el.nextSibling);
+          setTimeout(() => box.remove(), 15000);
+        } catch (err) { showErr('#agents-err', err.message); }
+        test.disabled = false; test.textContent = was;
+      };
+      el.append(test);
+    }
     if (a.installed && !a.connected) {
       const respond = document.createElement('label');
       respond.className = 'checkbox';

@@ -17,6 +17,7 @@ import { homedir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
 import { Connection } from './connection.mjs';
+import { invokeAgent } from './agent-cli.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.BRIDGE_PORT) || 7391;
@@ -252,6 +253,26 @@ async function handle(req, res) {
           connected: connectedNames.has(a.name),
         };
       }),
+    });
+  }
+
+  // Run the CLI once with a canned prompt and return exactly what it printed —
+  // this is what turns "connected but not responding" into a specific cause the
+  // user can see (needs login, wrong command, no output, non-zero exit).
+  const testMatch = p.match(/^\/api\/agents\/([a-z0-9-]+)\/test$/);
+  if (m === 'POST' && testMatch) {
+    const name = testMatch[1];
+    if (!KNOWN_AGENTS.some((a) => a.name === name)) return fail(res, 404, 'unknown agent');
+    const d = detectAgent(name);
+    if (!d.command) return fail(res, 400, d.reason || 'CLI not found');
+    const r = invokeAgent(name, d.command, 'Reply with exactly: BuildHall test OK');
+    return ok(res, {
+      command: d.command,
+      ok: r.ok,
+      status: r.status ?? null,
+      stdout: (r.stdout || '').slice(0, 2000),
+      stderr: (r.stderr || '').slice(0, 2000),
+      error: r.error || null,
     });
   }
 

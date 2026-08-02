@@ -11,37 +11,13 @@
 // talk to each other forever: the responder only answers HUMAN-authored
 // messages. Agent chatter is delivered to the file but never replied to.
 import { readFileSync, writeFileSync, existsSync, appendFileSync, statSync, unlinkSync } from 'node:fs';
-import { spawnSync } from 'node:child_process';
-import { extname } from 'node:path';
-
-// Run the CLI with the prompt as a REAL argument (never a shell string, which
-// would mangle a multi-line prompt). Dispatch by extension because Node cannot
-// exec a Windows .cmd/.bat/.ps1 shim directly — it needs cmd.exe / PowerShell.
-function runCli(command, args) {
-  const ext = extname(command).toLowerCase();
-  const opts = { encoding: 'utf8', timeout: 180000, windowsHide: true };
-  if (process.platform === 'win32' && (ext === '.cmd' || ext === '.bat')) {
-    return spawnSync('cmd', ['/c', command, ...args], opts);
-  }
-  if (process.platform === 'win32' && ext === '.ps1') {
-    return spawnSync('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', command, ...args], opts);
-  }
-  return spawnSync(command, args, opts);
-}
+import { invokeAgent, log } from './agent-cli.mjs';
 
 const [agent, file, commandOverride] = process.argv.slice(2);
 if (!agent || !file || !existsSync(file)) process.exit(2);
 
 const OFFSET_FILE = `${file}.responder-offset`;
 const LOCK_FILE = `${file}.responder-lock`;
-// The bridge passes the resolved command (which may be a full path or a
-// non-default name auto-detect missed). Fall back to the bare agent name.
-const bin = commandOverride || agent;
-const CLI = {
-  claude: (prompt) => [bin, ['-p', prompt]],
-  codex: (prompt) => [bin, ['exec', prompt]],
-}[agent];
-if (!CLI) process.exit(2);
 
 // One responder at a time per file: a slow CLI run must not race a second
 // invocation over the same offset. A stale lock (crash) expires after 5 min.
@@ -89,10 +65,15 @@ try {
     incoming.map((l) => `${l.author}: ${l.text}`).join('\n') + '\n\n' +
     `Write your reply to the group. Respond with the message text only — no preamble, no quoting.`;
 
-  const [cmd, args] = CLI(prompt);
-  const run = runCli(cmd, args);
-  const reply = (run.stdout || '').trim();
-  if (!reply) process.exit(0);
+  const result = invokeAgent(agent, commandOverride, prompt);
+  if (!result.ok) {
+    // Make the failure visible instead of silently not replying. This log is
+    // what turns "connected but not responding" into a specific cause.
+    log(`${agent}: ${result.error}` + (result.stderr ? ` | stderr: ${result.stderr.slice(0, 300)}` : ''));
+    process.exit(0);
+  }
+  const reply = result.stdout;
+  log(`${agent}: replied ${reply.length} chars`);
 
   // A plain line (no "source" tag), so the bridge tailer picks it up and posts
   // it to the group under this agent's bridge token.
