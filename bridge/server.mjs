@@ -486,8 +486,10 @@ server.listen(PORT, HOST, () => {
   console.log(`BuildHall Bridge running at ${url}`);
   console.log(`Config: ${CONFIG_FILE}`);
   console.log(`${connections.size} connection(s) restored.`);
-  // The panel pops up exactly once: on first run, when nothing is configured.
-  if (process.env.BRIDGE_NO_OPEN !== '1' && connections.size === 0 && !account) openBrowser(url);
+  // Open the panel on every launch. Launching is a manual, deliberate act (a
+  // shortcut double-click), so showing the panel is what the user expects —
+  // starting silently in the background reads as "nothing happened".
+  if (process.env.BRIDGE_NO_OPEN !== '1') openBrowser(url);
 });
 
 function openBrowser(url) {
