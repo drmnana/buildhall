@@ -323,6 +323,25 @@ try {
   const traversal = await fetch(`${app}/bridge-src/../src/db.js`);
   check('path traversal out of bridge-src is blocked', traversal.status !== 200, `status ${traversal.status}`);
 
+  // Self-heal: rewrite the persisted claude wake to an OLD-build form (no
+  // resolved command path), restart, and confirm the bridge rebuilds it with
+  // the resolved path — the exact fix for codex's ENOENT on Windows.
+  bridgeProc.kill(); await sleep(800);
+  const cfgPath = path.join(cfgDir, 'bridge.json');
+  const saved2 = JSON.parse(readFileSync(cfgPath, 'utf8'));
+  const agentConn = saved2.connections.find((c) => c.agent === 'claude' && c.respond);
+  check('a persisted auto-respond agent connection exists to heal', !!agentConn,
+    JSON.stringify(saved2.connections.map((c) => `${c.label}:${c.agent}:${c.respond}`)));
+  agentConn.wake = `"node" "responder.mjs" claude "${agentConn.file}"`;  // stale: no command path
+  writeFileSync(cfgPath, JSON.stringify(saved2, null, 2));
+  bridgeProc = startBridge();
+  for (let i = 0; i < 40; i++) { try { await fetch(bridge + '/api/connections'); break; } catch { await sleep(250); } }
+  await waitFor(async () => (await conns()).some((c) => c.status === 'live'));
+  await sleep(500);
+  const healed = JSON.parse(readFileSync(cfgPath, 'utf8')).connections.find((c) => c.agent === 'claude');
+  check('a stale agent wake is rebuilt with the resolved command path on launch',
+    (healed.wake || '').includes(path.join(binDir, 'claude')), healed.wake);
+
   // --- quit endpoint --------------------------------------------------------
   const quit = await api(bridge, 'POST', '/api/quit');
   check('quit endpoint stops the app',

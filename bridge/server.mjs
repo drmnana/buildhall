@@ -49,6 +49,9 @@ function loadConfig() {
     account = cfg.account ?? null;
     agentCommands = cfg.agentCommands ?? {};
     for (const c of cfg.connections ?? []) addConnection(c);
+    // addConnection may have rebuilt stale wake commands; write them back so the
+    // file matches what's actually running (and self-healed configs stay fixed).
+    if (connections.size > 0) saveConfig();
   } catch { /* corrupt config: start empty rather than crash on launch */ }
 }
 
@@ -58,14 +61,27 @@ function saveConfig() {
     account,
     agentCommands,
     connections: [...connections.values()].map((c) => ({
-      id: c.cfg.id, label: c.cfg.label, agent: c.cfg.agent, url: c.cfg.url,
+      id: c.cfg.id, label: c.cfg.label, agent: c.cfg.agent, respond: c.cfg.respond, url: c.cfg.url,
       token: c.cfg.token, group: c.cfg.group, file: c.cfg.file, wake: c.cfg.wake,
     })),
   }, null, 2));
   try { chmodSync(CONFIG_FILE, 0o600); } catch { /* windows */ }
 }
 
+// The responder invocation for an agent, or undefined if its CLI can't be found
+// right now. Built fresh each time so a moved/renamed/fixed CLI self-heals and
+// the resolved path (with its .cmd/.ps1 extension) is always current.
+function buildWake(agentName, file) {
+  const resolved = detectAgent(agentName);
+  if (!resolved.command) return undefined;
+  return `"${process.execPath}" "${path.join(__dirname, 'responder.mjs')}" ${agentName} "${file}" "${resolved.command}"`;
+}
+
 function addConnection(cfg) {
+  // Recompute the wake for auto-respond agents on every add (including restore
+  // at launch), so connections saved by an older build — which stored a wake
+  // with no resolved command path — start working without re-creating them.
+  if (cfg.agent && cfg.respond) cfg.wake = buildWake(cfg.agent, cfg.file);
   const conn = new Connection(cfg);
   connections.set(cfg.id, conn);
   conn.start();
@@ -96,16 +112,19 @@ async function remote(method, apiPath, { body } = {}) {
 // found instead of a bare "not found".
 function detectAgent(name) {
   if (agentCommands[name]) {
-    // An override the user set. Trust a path that exists, or a bare command
-    // `where`/`which` can still resolve.
+    // An override the user set. Trust a path that exists, or resolve a bare
+    // command to its full path.
     const cmd = agentCommands[name];
     if (existsSync(cmd)) return { command: cmd, path: cmd };
     const r = whereIs(cmd);
-    if (r) return { command: cmd, path: r };
+    if (r) return { command: r, path: r };
     return { command: null, reason: `your saved command "${cmd}" was not found` };
   }
   const found = whereIs(name);
-  if (found) return { command: name, path: found };
+  // Return the RESOLVED path (e.g. C:\...\codex.cmd), never the bare name. A
+  // bare "codex" fails with ENOENT on Windows because Node cannot launch a .cmd
+  // shim without its extension — the responder dispatches on that extension.
+  if (found) return { command: found, path: found };
   const finder = process.platform === 'win32' ? 'where' : 'which';
   return {
     command: null,
@@ -335,14 +354,13 @@ async function handle(req, res) {
       id: randomUUID(),
       label: mint.json.agentName,
       agent: name,
+      respond: !!respond,
       token: mint.json.token,
       group: slug,
       file,
       url: account.url,
-      wake: respond
-        ? `"${process.execPath}" "${path.join(__dirname, 'responder.mjs')}" ${name} "${file}" "${resolved.command}"`
-        : undefined,
     };
+    // addConnection builds cfg.wake from live detection when respond is on.
     const conn = addConnection(cfg);
     saveConfig();
     return send(res, 201, { connection: conn.toJSON() });
