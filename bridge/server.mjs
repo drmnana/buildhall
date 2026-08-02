@@ -36,6 +36,8 @@ const KNOWN_AGENTS = [
 const connections = new Map();
 /** @type {{url:string,username:string,session:string}|null} */
 let account = null;
+/** @type {Record<string,string>} user-set command overrides, keyed by agent name */
+let agentCommands = {};
 
 // --- config ----------------------------------------------------------------
 
@@ -44,6 +46,7 @@ function loadConfig() {
   try {
     const cfg = JSON.parse(readFileSync(CONFIG_FILE, 'utf8'));
     account = cfg.account ?? null;
+    agentCommands = cfg.agentCommands ?? {};
     for (const c of cfg.connections ?? []) addConnection(c);
   } catch { /* corrupt config: start empty rather than crash on launch */ }
 }
@@ -52,6 +55,7 @@ function saveConfig() {
   mkdirSync(CONFIG_DIR, { recursive: true });
   writeFileSync(CONFIG_FILE, JSON.stringify({
     account,
+    agentCommands,
     connections: [...connections.values()].map((c) => ({
       id: c.cfg.id, label: c.cfg.label, agent: c.cfg.agent, url: c.cfg.url,
       token: c.cfg.token, group: c.cfg.group, file: c.cfg.file, wake: c.cfg.wake,
@@ -82,10 +86,49 @@ async function remote(method, apiPath, { body } = {}) {
   return { status: res.status, json: await res.json().catch(() => null) };
 }
 
-function detectInstalled(name) {
+// Resolve an agent's command. Returns { command, path, reason }.
+//
+// `where codex` on Windows quietly misses real installs: PATHEXT excludes .ps1,
+// so a PowerShell-shimmed CLI is invisible, and a WSL/venv install is not on the
+// plain process PATH at all. So we (a) honour a user-set override, (b) try the
+// bare name AND common Windows extensions, and (c) report WHY when nothing is
+// found instead of a bare "not found".
+function detectAgent(name) {
+  if (agentCommands[name]) {
+    // An override the user set. Trust a path that exists, or a bare command
+    // `where`/`which` can still resolve.
+    const cmd = agentCommands[name];
+    if (existsSync(cmd)) return { command: cmd, path: cmd };
+    const r = whereIs(cmd);
+    if (r) return { command: cmd, path: r };
+    return { command: null, reason: `your saved command "${cmd}" was not found` };
+  }
+  const found = whereIs(name);
+  if (found) return { command: name, path: found };
   const finder = process.platform === 'win32' ? 'where' : 'which';
-  try { return spawnSync(finder, [name], { stdio: 'ignore' }).status === 0; }
-  catch { return false; }
+  return {
+    command: null,
+    reason: `\`${finder} ${name}\` found nothing on the bridge's PATH`
+      + (process.platform === 'win32'
+        ? ' (a PowerShell-only or WSL install is invisible here — use "Set path" below)'
+        : ''),
+  };
+}
+
+// Locate a command, covering the Windows-extension gaps `where` alone leaves.
+function whereIs(name) {
+  const finder = process.platform === 'win32' ? 'where' : 'which';
+  const candidates = process.platform === 'win32'
+    ? [name, `${name}.cmd`, `${name}.exe`, `${name}.bat`, `${name}.ps1`]
+    : [name];
+  for (const c of candidates) {
+    try {
+      const r = spawnSync(finder, [c], { encoding: 'utf8' });
+      const hit = (r.stdout || '').split(/\r?\n/).map((s) => s.trim()).find(Boolean);
+      if (r.status === 0 && hit) return hit;
+    } catch { /* try next candidate */ }
+  }
+  return null;
 }
 
 function openTerminalWith(command) {
@@ -198,10 +241,35 @@ async function handle(req, res) {
         .map((c) => c.cfg.agent).filter(Boolean),
     );
     return ok(res, {
-      agents: KNOWN_AGENTS.map((a) => ({
-        ...a, installed: detectInstalled(a.name), connected: connectedNames.has(a.name),
-      })),
+      agents: KNOWN_AGENTS.map((a) => {
+        const d = detectAgent(a.name);
+        return {
+          ...a,
+          installed: !!d.command,
+          path: d.path || null,
+          reason: d.reason || null,
+          override: agentCommands[a.name] || null,
+          connected: connectedNames.has(a.name),
+        };
+      }),
     });
+  }
+
+  // Point the bridge at a CLI auto-detect missed (or clear the override).
+  const cmdMatch = p.match(/^\/api\/agents\/([a-z0-9-]+)\/command$/);
+  if (m === 'POST' && cmdMatch) {
+    const name = cmdMatch[1];
+    if (!KNOWN_AGENTS.some((a) => a.name === name)) return fail(res, 404, 'unknown agent');
+    const { command } = await readBody(req);
+    const cmd = String(command || '').trim();
+    if (!cmd) { delete agentCommands[name]; saveConfig(); return ok(res, { cleared: true }); }
+    // Resolve to a concrete path before saving: a bare name has no extension for
+    // the responder to dispatch on, and a typo must fail now, not at reply time.
+    const resolved = existsSync(cmd) ? cmd : whereIs(cmd);
+    if (!resolved) return fail(res, 400, `"${cmd}" is not a file that exists or a command on PATH`);
+    agentCommands[name] = resolved;
+    saveConfig();
+    return ok(res, { command: resolved });
   }
 
   const agentMatch = p.match(/^\/api\/agents\/([a-z0-9-]+)\/(connect|login)$/);
@@ -220,6 +288,13 @@ async function handle(req, res) {
     const { group, respond } = await readBody(req);
     const slug = String(group || '').trim();
     if (!slug) return fail(res, 400, 'pick a group first');
+
+    // If auto-respond is on, the CLI must be resolvable now — otherwise the
+    // agent would connect but silently never answer.
+    const resolved = detectAgent(name);
+    if (respond && !resolved.command) {
+      return fail(res, 400, `can't auto-respond: ${resolved.reason}`);
+    }
 
     const join = await remote('POST', `/api/groups/${slug}/join`);
     if (join.status === 401) return fail(res, 401, 'session expired — sign in again');
@@ -244,7 +319,7 @@ async function handle(req, res) {
       file,
       url: account.url,
       wake: respond
-        ? `"${process.execPath}" "${path.join(__dirname, 'responder.mjs')}" ${name} "${file}"`
+        ? `"${process.execPath}" "${path.join(__dirname, 'responder.mjs')}" ${name} "${file}" "${resolved.command}"`
         : undefined,
     };
     const conn = addConnection(cfg);

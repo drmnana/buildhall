@@ -89,14 +89,30 @@ async function loadAgents() {
     const status = a.connected ? '<span class="pill live">connected</span>'
       : a.installed ? '<span class="pill idle">found</span>'
         : '<span class="pill stopped">not found</span>';
+    const detail = a.installed
+      ? `found at <code>${esc(a.path || a.name)}</code>`
+      : `${esc(a.reason || 'not found')} · <a href="${esc(a.installHint)}" target="_blank">get ${esc(a.title)}</a>`;
     el.innerHTML =
       `${status}
        <div class="grow">
          <div class="name">${esc(a.title)}</div>
-         <div class="meta">${a.installed
-           ? `command <code>${esc(a.name)}</code> is installed on this machine`
-           : `not installed — <a href="${esc(a.installHint)}" target="_blank">get ${esc(a.title)}</a>`}</div>
+         <div class="meta">${detail}</div>
        </div>`;
+    if (!a.installed) {
+      // Let the user point the bridge at a CLI auto-detect missed.
+      const setPath = document.createElement('button');
+      setPath.className = 'btn tiny2';
+      setPath.textContent = a.override ? 'Change path' : 'Set path';
+      setPath.onclick = async () => {
+        const command = prompt(
+          `Full path or command for ${a.title} (as you'd type it in your terminal):`,
+          a.override || a.name);
+        if (command === null) return;
+        try { await api(`/api/agents/${a.name}/command`, { method: 'POST', body: JSON.stringify({ command }) }); refresh(); }
+        catch (err) { showErr('#agents-err', err.message); }
+      };
+      el.append(setPath);
+    }
     if (a.installed && !a.connected) {
       const respond = document.createElement('label');
       respond.className = 'checkbox';

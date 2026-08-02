@@ -217,6 +217,58 @@ try {
     finalMsgs.filter((x) => x.text === 'auto-reply from fake claude').length === 1,
     `${finalMsgs.length} messages total`);
 
+  // --- codex not on PATH: reason shown, auto-respond blocked, override fixes it
+  const agentsNow = (await api(bridge, 'GET', '/api/agents')).json.agents;
+  const codex = agentsNow.find((a) => a.name === 'codex');
+  check('an undetected agent reports WHY, not a bare "not found"',
+    codex.installed === false && typeof codex.reason === 'string' && codex.reason.length > 0, codex.reason);
+
+  const blocked = await api(bridge, 'POST', '/api/agents/codex/connect',
+    { body: { group: 'guided-hall', respond: true } });
+  check('auto-respond connect is refused when the CLI cannot be found',
+    blocked.status === 400 && /can't auto-respond/.test(blocked.json?.error || ''), blocked.json?.error);
+
+  const badOverride = await api(bridge, 'POST', '/api/agents/codex/command',
+    { body: { command: '/no/such/codex/binary' } });
+  check('a bogus override path is rejected', badOverride.status === 400, badOverride.json?.error);
+
+  // Point codex at the same fake CLI we planted for claude — now it resolves.
+  const fakeCodex = path.join(binDir, 'codex');
+  writeFileSync(fakeCodex, '#!/bin/sh\necho "auto-reply from fake codex"\n');
+  chmodSync(fakeCodex, 0o755);
+  const setCmd = await api(bridge, 'POST', '/api/agents/codex/command', { body: { command: fakeCodex } });
+  check('setting a valid override succeeds', setCmd.status === 200, JSON.stringify(setCmd.json));
+
+  const codex2 = (await api(bridge, 'GET', '/api/agents')).json.agents.find((a) => a.name === 'codex');
+  check('after the override, codex reports installed at the given path',
+    codex2.installed === true && codex2.path === fakeCodex, `${codex2.installed} ${codex2.path}`);
+
+  const nowConnect = await api(bridge, 'POST', '/api/agents/codex/connect',
+    { body: { group: 'guided-hall', respond: true } });
+  check('with the override, codex connects', nowConnect.status === 201, JSON.stringify(nowConnect.json));
+  // Wait for codex's socket to actually join the room before posting, or the
+  // message broadcasts before it is subscribed and it never sees it.
+  await waitFor(async () => (await conns()).some((c) => c.label === 'bridgeowner codex' && c.status === 'live'));
+  await sleep(500);
+  await api(app, 'POST', '/api/groups/guided-hall/messages', { token: human2, body: { text: 'hello codex' } });
+  check('the overridden codex auto-responds in the group', await waitFor(async () => {
+    const msgs = (await api(app, 'GET', '/api/groups/guided-hall/messages', { token: human2 })).json.messages;
+    return msgs.some((x) => x.text === 'auto-reply from fake codex' && x.agent_name === 'bridgeowner codex');
+  }, 30000));
+
+  // Stale-lock regression: an AI-only message must not leave a lock that blocks
+  // the next human message (process.exit skipped the finally that freed it).
+  await api(app, 'POST', '/api/groups/guided-hall/messages', { token: aiTok, body: { text: 'more ai chatter' } });
+  await sleep(3000);
+  await api(app, 'POST', '/api/groups/guided-hall/messages', { token: human2, body: { text: 'anyone there' } });
+  check('a human message right after an AI-only batch still gets answered', await waitFor(async () => {
+    const files = (await conns()).filter((c) => c.status === 'live');
+    // both live agents should have replied to "anyone there"
+    const msgs = (await api(app, 'GET', '/api/groups/guided-hall/messages', { token: human2 })).json.messages;
+    const replies = msgs.filter((x) => x.created_at > '2026' && /auto-reply from fake/.test(x.text));
+    return replies.length >= 3;   // claude+codex to hello, plus at least one to "anyone there"
+  }, 30000));
+
   // --- download endpoints on the main server --------------------------------
   const manifest = await api(app, 'GET', '/download/manifest.json');
   check('download manifest lists the bridge files',
