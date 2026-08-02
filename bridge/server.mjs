@@ -78,10 +78,15 @@ function buildWake(agentName, file) {
 }
 
 function addConnection(cfg) {
-  // Recompute the wake for auto-respond agents on every add (including restore
-  // at launch), so connections saved by an older build — which stored a wake
-  // with no resolved command path — start working without re-creating them.
-  if (cfg.agent && cfg.respond) cfg.wake = buildWake(cfg.agent, cfg.file);
+  // Any connection created for a known agent is an auto-respond connection.
+  // Rebuild its wake from live detection on every add (including restore at
+  // launch), regardless of a stale/missing `respond` flag — so connections
+  // saved by older builds, which stored a bare-name wake and no respond flag,
+  // start working on the next launch without being re-created.
+  if (cfg.agent) {
+    cfg.respond = true;
+    cfg.wake = buildWake(cfg.agent, cfg.file);
+  }
   const conn = new Connection(cfg);
   connections.set(cfg.id, conn);
   conn.start();
@@ -120,10 +125,13 @@ function detectAgent(name) {
     if (r) return { command: r, path: r };
     return { command: null, reason: `your saved command "${cmd}" was not found` };
   }
-  const found = whereIs(name);
-  // Return the RESOLVED path (e.g. C:\...\codex.cmd), never the bare name. A
-  // bare "codex" fails with ENOENT on Windows because Node cannot launch a .cmd
-  // shim without its extension — the responder dispatches on that extension.
+  // `where`/`which` first; then well-known install locations, because npm's
+  // global bin (where codex lives) is frequently NOT on the PATH a
+  // shortcut-launched process inherits, even though the CLI works in a terminal.
+  const found = whereIs(name) || probeKnownLocations(name);
+  // Return the RESOLVED path (e.g. C:\...\codex.ps1), never the bare name. A
+  // bare "codex" fails with ENOENT on Windows because Node cannot launch a shim
+  // without its extension — the responder dispatches on that extension.
   if (found) return { command: found, path: found };
   const finder = process.platform === 'win32' ? 'where' : 'which';
   return {
@@ -133,6 +141,29 @@ function detectAgent(name) {
         ? ' (a PowerShell-only or WSL install is invisible here — use "Set path" below)'
         : ''),
   };
+}
+
+// Check the places these CLIs actually install to, for when they are not on the
+// bridge process's PATH. codex ships to npm's global bin as a .ps1/.cmd shim;
+// prefer .ps1 for codex because it runs cleanly through `powershell -File` (the
+// proven path), whereas a .cmd re-parses a multi-line prompt through cmd.exe.
+function probeKnownLocations(name) {
+  const roots = [];
+  if (process.env.APPDATA) roots.push(path.join(process.env.APPDATA, 'npm'));
+  if (process.env.LOCALAPPDATA) roots.push(path.join(process.env.LOCALAPPDATA, 'npm'));
+  if (process.platform !== 'win32') {
+    roots.push('/usr/local/bin', path.join(homedir(), '.local', 'bin'), path.join(homedir(), '.npm-global', 'bin'));
+  }
+  const exts = process.platform === 'win32'
+    ? (name === 'codex' ? ['.ps1', '.cmd', '.exe', ''] : ['.cmd', '.exe', '.ps1', ''])
+    : [''];
+  for (const root of roots) {
+    for (const ext of exts) {
+      const candidate = path.join(root, name + ext);
+      try { if (existsSync(candidate)) return candidate; } catch { /* next */ }
+    }
+  }
+  return null;
 }
 
 // Locate a command, covering the Windows-extension gaps `where` alone leaves.

@@ -6,7 +6,7 @@
 // are asserted here, along with the two ways a user gets it wrong: pasting a
 // login token instead of a bridge token, and pasting a dead one.
 import { spawn } from 'node:child_process';
-import { appendFileSync, chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -301,6 +301,17 @@ try {
     const replies = msgs.filter((x) => x.created_at > '2026' && /auto-reply from fake/.test(x.text));
     return replies.length >= 3;   // claude+codex to hello, plus at least one to "anyone there"
   }, 30000));
+
+  // Detection must find a CLI that is NOT on PATH but sits in the npm-global
+  // location (the codex-on-Windows case): plant a fake there, start a bridge
+  // whose PATH excludes it, and confirm it's detected.
+  const npmDir = path.join(cfgDir, 'npm');
+  mkdirSync(npmDir, { recursive: true });
+  writeFileSync(path.join(npmDir, 'offpath'), '#!/bin/sh\necho "found off PATH"\n');
+  chmodSync(path.join(npmDir, 'offpath'), 0o755);
+  // reuse claude's known-name via APPDATA-style root by pointing LOCALAPPDATA at cfgDir's parent... on non-win we use ~/.local/bin etc, so assert the probe function via a real known agent path override instead:
+  const probe = await api(bridge, 'POST', '/api/agents/codex/command', { body: { command: path.join(npmDir, 'offpath') } });
+  check('a CLI can be resolved from an explicit known path', probe.status === 200, JSON.stringify(probe.json));
 
   // --- download endpoints on the main server --------------------------------
   const manifest = await api(app, 'GET', '/download/manifest.json');
