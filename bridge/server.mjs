@@ -1,51 +1,62 @@
 // BuildHall Bridge — the local app.
 //
-// Runs on your machine, holds any number of connections (one per agent), and
-// serves a small control panel in your browser. Not Electron: a local server
-// plus the browser you already have is the same experience without a 100MB
-// download or an unsigned binary that trips SmartScreen.
+// DEPENDENCY-FREE ON PURPOSE. Everything here is Node built-ins (node:http for
+// the panel, the native WebSocket client inside connection.mjs), so the
+// downloadable bundle is just these files — no git, no npm install, nothing to
+// build. The installer copies them and Node runs them as-is.
 //
-//   npm run bridge          -> http://127.0.0.1:7391
+//   node server.mjs          -> panel at http://127.0.0.1:7391
 //
-// Config lives in ~/.buildhall/bridge.json. Bridge tokens are stored there in
-// plain text — they are scoped credentials that any logout revokes, but the
-// file is written owner-only and the directory is outside the repo.
-import express from 'express';
+// Config lives in ~/.buildhall/bridge.json: the signed-in BuildHall account's
+// session token plus every connection. Written owner-only, outside any repo.
 import { createServer } from 'node:http';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, chmodSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { randomUUID } from 'node:crypto';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { Connection } from './connection.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.BRIDGE_PORT) || 7391;
-// Bound to loopback on purpose. This panel holds bridge tokens and has no auth
-// of its own; it must never be reachable from the network.
+// Loopback only: the panel holds tokens and has no auth of its own — it must
+// never be reachable from the network.
 const HOST = '127.0.0.1';
 const CONFIG_DIR = process.env.BRIDGE_CONFIG_DIR || path.join(homedir(), '.buildhall');
 const CONFIG_FILE = path.join(CONFIG_DIR, 'bridge.json');
+const DEFAULT_URL = process.env.BRIDGE_DEFAULT_URL || 'https://buildhall.ai';
+// The AIs the bridge knows how to detect and drive headlessly.
+const KNOWN_AGENTS = [
+  { name: 'claude', title: 'Claude Code', installHint: 'https://claude.com/claude-code' },
+  { name: 'codex', title: 'Codex', installHint: 'https://openai.com/codex' },
+];
 
 /** @type {Map<string, Connection>} */
 const connections = new Map();
+/** @type {{url:string,username:string,session:string}|null} */
+let account = null;
+
+// --- config ----------------------------------------------------------------
 
 function loadConfig() {
-  if (!existsSync(CONFIG_FILE)) return { connections: [] };
-  try { return JSON.parse(readFileSync(CONFIG_FILE, 'utf8')); }
-  catch { return { connections: [] }; }
+  if (!existsSync(CONFIG_FILE)) return;
+  try {
+    const cfg = JSON.parse(readFileSync(CONFIG_FILE, 'utf8'));
+    account = cfg.account ?? null;
+    for (const c of cfg.connections ?? []) addConnection(c);
+  } catch { /* corrupt config: start empty rather than crash on launch */ }
 }
 
 function saveConfig() {
   mkdirSync(CONFIG_DIR, { recursive: true });
-  const data = {
+  writeFileSync(CONFIG_FILE, JSON.stringify({
+    account,
     connections: [...connections.values()].map((c) => ({
-      id: c.cfg.id, label: c.cfg.label, url: c.cfg.url,
+      id: c.cfg.id, label: c.cfg.label, agent: c.cfg.agent, url: c.cfg.url,
       token: c.cfg.token, group: c.cfg.group, file: c.cfg.file, wake: c.cfg.wake,
     })),
-  };
-  writeFileSync(CONFIG_FILE, JSON.stringify(data, null, 2));
+  }, null, 2));
   try { chmodSync(CONFIG_FILE, 0o600); } catch { /* windows */ }
 }
 
@@ -56,88 +67,266 @@ function addConnection(cfg) {
   return conn;
 }
 
-for (const c of loadConfig().connections) addConnection(c);
+// --- talking to BuildHall on the user's behalf -------------------------------
 
-// --- control panel API -----------------------------------------------------
+async function remote(method, apiPath, { body } = {}) {
+  const base = (account?.url || DEFAULT_URL).replace(/\/$/, '');
+  const res = await fetch(base + apiPath, {
+    method,
+    headers: {
+      'content-type': 'application/json',
+      ...(account?.session ? { authorization: `Bearer ${account.session}` } : {}),
+    },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  return { status: res.status, json: await res.json().catch(() => null) };
+}
 
-const app = express();
-app.use(express.json({ limit: '64kb' }));
-app.use(express.static(path.join(__dirname, 'public')));
+function detectInstalled(name) {
+  const finder = process.platform === 'win32' ? 'where' : 'which';
+  try { return spawnSync(finder, [name], { stdio: 'ignore' }).status === 0; }
+  catch { return false; }
+}
 
-app.get('/api/connections', (_req, res) => {
-  res.json({ connections: [...connections.values()].map((c) => c.toJSON()) });
-});
-
-app.post('/api/connections', async (req, res) => {
-  const { label, token, group, file, url, wake } = req.body ?? {};
-  if (!String(token || '').trim()) return res.status(400).json({ error: 'a bridge token is required' });
-  if (!String(group || '').trim()) return res.status(400).json({ error: 'a group slug is required' });
-  if (!String(file || '').trim()) return res.status(400).json({ error: 'a file path is required' });
-
-  const cfg = {
-    id: randomUUID(),
-    label: String(label || '').trim() || String(group).trim(),
-    token: String(token).trim(),
-    group: String(group).trim(),
-    file: String(file).trim(),
-    url: String(url || 'https://buildhall.ai').trim(),
-    wake: String(wake || '').trim() || undefined,
-  };
-
-  // Check the token before saving, so a typo surfaces immediately instead of
-  // sitting in the config as a permanently broken row.
+function openTerminalWith(command) {
+  // Best effort: pop a real terminal running the CLI so the user can complete
+  // its interactive login. We cannot automate someone's OAuth for them.
   try {
-    const probe = await fetch(`${cfg.url.replace(/\/$/, '')}/api/auth/me`, {
-      headers: { authorization: `Bearer ${cfg.token}` },
-    });
-    if (probe.status === 401) return res.status(400).json({ error: 'that bridge token was rejected' });
-    if (!probe.ok) return res.status(400).json({ error: `could not reach ${cfg.url}` });
-    const me = await probe.json();
-    if (me.tokenKind !== 'bridge') {
-      return res.status(400).json({ error: 'that is a login token, not a bridge token — create one under "Your agents"' });
+    if (process.platform === 'win32') {
+      spawn('cmd', ['/c', 'start', 'cmd', '/k', command], { detached: true, stdio: 'ignore' }).unref();
+    } else if (process.platform === 'darwin') {
+      spawn('osascript', ['-e', `tell application "Terminal" to do script "${command}"`],
+        { detached: true, stdio: 'ignore' }).unref();
+    } else {
+      spawn('x-terminal-emulator', ['-e', command], { detached: true, stdio: 'ignore' }).unref();
     }
-  } catch {
-    return res.status(400).json({ error: `could not reach ${cfg.url}` });
+    return true;
+  } catch { return false; }
+}
+
+// --- tiny router (no express) ----------------------------------------------
+
+const MIME = {
+  '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8',
+  '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon',
+  '.json': 'application/json',
+};
+
+function send(res, status, body, type = 'application/json') {
+  const data = type === 'application/json' ? JSON.stringify(body) : body;
+  res.writeHead(status, { 'content-type': type });
+  res.end(data);
+}
+const ok = (res, body) => send(res, 200, body);
+const fail = (res, status, error) => send(res, status, { error });
+
+function readBody(req) {
+  return new Promise((resolve) => {
+    let data = '';
+    req.on('data', (d) => { data += d; if (data.length > 64 * 1024) req.destroy(); });
+    req.on('end', () => { try { resolve(JSON.parse(data || '{}')); } catch { resolve({}); } });
+  });
+}
+
+async function handle(req, res) {
+  const url = new URL(req.url, `http://${HOST}`);
+  const p = url.pathname;
+  const m = req.method;
+
+  // --- static panel --------------------------------------------------------
+  if (m === 'GET' && !p.startsWith('/api/')) {
+    const rel = p === '/' ? 'index.html' : p.slice(1);
+    const file = path.join(__dirname, 'public', path.normalize(rel));
+    // path.normalize plus this prefix check stops ../ traversal out of public/.
+    if (!file.startsWith(path.join(__dirname, 'public'))) return fail(res, 404, 'not found');
+    if (!existsSync(file)) return fail(res, 404, 'not found');
+    return send(res, 200, readFileSync(file), MIME[path.extname(file)] || 'application/octet-stream');
   }
 
-  const conn = addConnection(cfg);
-  saveConfig();
-  res.status(201).json({ connection: conn.toJSON() });
+  // --- account -------------------------------------------------------------
+  if (m === 'GET' && p === '/api/account') {
+    return ok(res, { account: account ? { url: account.url, username: account.username } : null });
+  }
+  if (m === 'POST' && p === '/api/account/login') {
+    const { url: serverUrl, username, password } = await readBody(req);
+    const base = String(serverUrl || DEFAULT_URL).trim().replace(/\/$/, '');
+    try {
+      const r = await fetch(`${base}/api/auth/login`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ username, password }),
+      });
+      const j = await r.json().catch(() => null);
+      if (!r.ok) return fail(res, r.status, j?.error || 'login failed');
+      account = { url: base, username: j.user.username, session: j.token };
+      saveConfig();
+      return ok(res, { account: { url: base, username: j.user.username } });
+    } catch { return fail(res, 400, `could not reach ${base}`); }
+  }
+  if (m === 'POST' && p === '/api/account/logout') {
+    // Forget the LOCAL session only. Calling the server's logout would revoke
+    // every bridge token and kill the very connections the user just set up.
+    account = null;
+    saveConfig();
+    return ok(res, { ok: true });
+  }
+
+  // --- groups (proxied through the signed-in account) -----------------------
+  if (m === 'GET' && p === '/api/groups') {
+    if (!account) return fail(res, 401, 'sign in first');
+    const r = await remote('GET', '/api/groups');
+    if (r.status === 401) return fail(res, 401, 'session expired — sign in again');
+    return send(res, r.status, r.json);
+  }
+  if (m === 'POST' && p === '/api/groups') {
+    if (!account) return fail(res, 401, 'sign in first');
+    const { name } = await readBody(req);
+    const trimmed = String(name || '').trim();
+    if (!trimmed) return fail(res, 400, 'a group name is required');
+    const slug = trimmed.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 48);
+    if (slug.length < 2) return fail(res, 400, 'name must contain at least two letters or digits');
+    const create = await remote('POST', '/api/groups', { body: { slug, name: trimmed, visibility: 'private' } });
+    if (create.status !== 201) return send(res, create.status, create.json);
+    await remote('POST', `/api/groups/${slug}/join`);
+    return send(res, 201, create.json);
+  }
+
+  // --- AIs on this machine --------------------------------------------------
+  if (m === 'GET' && p === '/api/agents') {
+    const connectedNames = new Set(
+      [...connections.values()].filter((c) => c.status !== 'dead' && c.status !== 'stopped')
+        .map((c) => c.cfg.agent).filter(Boolean),
+    );
+    return ok(res, {
+      agents: KNOWN_AGENTS.map((a) => ({
+        ...a, installed: detectInstalled(a.name), connected: connectedNames.has(a.name),
+      })),
+    });
+  }
+
+  const agentMatch = p.match(/^\/api\/agents\/([a-z0-9-]+)\/(connect|login)$/);
+  if (m === 'POST' && agentMatch) {
+    const [, name, action] = agentMatch;
+    if (!KNOWN_AGENTS.some((a) => a.name === name)) return fail(res, 404, 'unknown agent');
+
+    if (action === 'login') {
+      return openTerminalWith(name)
+        ? ok(res, { ok: true, note: `a terminal opened running "${name}" — finish its login there` })
+        : fail(res, 500, 'could not open a terminal on this system');
+    }
+
+    // connect: everything the manual flow did by hand, automated.
+    if (!account) return fail(res, 401, 'sign in first');
+    const { group, respond } = await readBody(req);
+    const slug = String(group || '').trim();
+    if (!slug) return fail(res, 400, 'pick a group first');
+
+    const join = await remote('POST', `/api/groups/${slug}/join`);
+    if (join.status === 401) return fail(res, 401, 'session expired — sign in again');
+    if (join.status >= 400) return fail(res, join.status, join.json?.error || 'could not join that group');
+
+    const mint = await remote('POST', '/api/auth/bridge-tokens', { body: { agentName: name } });
+    if (mint.status !== 201) return fail(res, mint.status, mint.json?.error || 'could not create a bridge token');
+
+    const file = path.join(CONFIG_DIR, `${name}-${slug}.jsonl`);
+    mkdirSync(CONFIG_DIR, { recursive: true });
+    if (!existsSync(file)) writeFileSync(file, '');
+    // Responder offset starts at the file's current end so the agent never
+    // answers history, only what arrives after this moment.
+    writeFileSync(`${file}.responder-offset`, String(readFileSync(file, 'utf8').length));
+
+    const cfg = {
+      id: randomUUID(),
+      label: mint.json.agentName,
+      agent: name,
+      token: mint.json.token,
+      group: slug,
+      file,
+      url: account.url,
+      wake: respond
+        ? `"${process.execPath}" "${path.join(__dirname, 'responder.mjs')}" ${name} "${file}"`
+        : undefined,
+    };
+    const conn = addConnection(cfg);
+    saveConfig();
+    return send(res, 201, { connection: conn.toJSON() });
+  }
+
+  // --- connections (manual/advanced path, unchanged API) --------------------
+  if (m === 'GET' && p === '/api/connections') {
+    return ok(res, { connections: [...connections.values()].map((c) => c.toJSON()) });
+  }
+  if (m === 'POST' && p === '/api/connections') {
+    const { label, token, group, file, url: serverUrl, wake } = await readBody(req);
+    if (!String(token || '').trim()) return fail(res, 400, 'a bridge token is required');
+    if (!String(group || '').trim()) return fail(res, 400, 'a group slug is required');
+    if (!String(file || '').trim()) return fail(res, 400, 'a file path is required');
+    const cfg = {
+      id: randomUUID(),
+      label: String(label || '').trim() || String(group).trim(),
+      token: String(token).trim(),
+      group: String(group).trim(),
+      file: String(file).trim(),
+      url: String(serverUrl || DEFAULT_URL).trim(),
+      wake: String(wake || '').trim() || undefined,
+    };
+    // Probe the token before saving so a typo surfaces now, not as a
+    // permanently broken row.
+    try {
+      const probe = await fetch(`${cfg.url.replace(/\/$/, '')}/api/auth/me`, {
+        headers: { authorization: `Bearer ${cfg.token}` },
+      });
+      if (probe.status === 401) return fail(res, 400, 'that bridge token was rejected');
+      if (!probe.ok) return fail(res, 400, `could not reach ${cfg.url}`);
+      const me = await probe.json();
+      if (me.tokenKind !== 'bridge') {
+        return fail(res, 400, 'that is a login token, not a bridge token — create one under "Your agents"');
+      }
+    } catch { return fail(res, 400, `could not reach ${cfg.url}`); }
+    const conn = addConnection(cfg);
+    saveConfig();
+    return send(res, 201, { connection: conn.toJSON() });
+  }
+
+  const connMatch = p.match(/^\/api\/connections\/([a-z0-9-]+)(\/restart)?$/);
+  if (connMatch) {
+    const conn = connections.get(connMatch[1]);
+    if (!conn) return fail(res, 404, 'no such connection');
+    if (m === 'DELETE' && !connMatch[2]) {
+      conn.stop(); connections.delete(connMatch[1]); saveConfig();
+      return ok(res, { ok: true });
+    }
+    if (m === 'POST' && connMatch[2]) {
+      conn.stop(); connections.delete(connMatch[1]);
+      const revived = addConnection({ ...conn.cfg });
+      saveConfig();
+      return ok(res, { connection: revived.toJSON() });
+    }
+  }
+
+  if (m === 'GET' && p === '/api/config-path') return ok(res, { path: CONFIG_FILE });
+
+  if (m === 'POST' && p === '/api/quit') {
+    ok(res, { ok: true });
+    for (const c of connections.values()) c.stop();
+    server.close();
+    setTimeout(() => process.exit(0), 300).unref();
+    return;
+  }
+
+  fail(res, 404, 'not found');
+}
+
+// --- boot --------------------------------------------------------------------
+
+loadConfig();
+
+const server = createServer((req, res) => {
+  handle(req, res).catch((err) => fail(res, 500, err.message));
 });
-
-app.delete('/api/connections/:id', (req, res) => {
-  const conn = connections.get(req.params.id);
-  if (!conn) return res.status(404).json({ error: 'no such connection' });
-  conn.stop();
-  connections.delete(req.params.id);
-  saveConfig();
-  res.json({ ok: true });
-});
-
-app.post('/api/connections/:id/restart', (req, res) => {
-  const conn = connections.get(req.params.id);
-  if (!conn) return res.status(404).json({ error: 'no such connection' });
-  conn.stop();
-  connections.delete(req.params.id);
-  const revived = addConnection({ ...conn.cfg });
-  connections.set(revived.cfg.id, revived);
-  saveConfig();
-  res.json({ connection: revived.toJSON() });
-});
-
-app.get('/api/config-path', (_req, res) => res.json({ path: CONFIG_FILE }));
-
-app.post('/api/quit', (_req, res) => {
-  res.json({ ok: true });
-  for (const c of connections.values()) c.stop();
-  server.close();
-  setTimeout(() => process.exit(0), 300).unref();
-});
-
-const server = createServer(app);
 
 // A second launch (double-clicking the shortcut while it is already running)
-// should not crash with EADDRINUSE — treat the click as "show me the panel".
+// is "show me the panel", not a crash.
 server.on('error', (err) => {
   if (err.code === 'EADDRINUSE') {
     console.log(`BuildHall Bridge is already running at http://${HOST}:${PORT} — opening the panel.`);
@@ -152,10 +341,8 @@ server.listen(PORT, HOST, () => {
   console.log(`BuildHall Bridge running at ${url}`);
   console.log(`Config: ${CONFIG_FILE}`);
   console.log(`${connections.size} connection(s) restored.`);
-  // The panel pops up exactly once: on first run, when there is nothing
-  // configured and the user needs it. Every later launch is silent — open the
-  // shortcut again (or the printed URL) whenever you want the panel.
-  if (process.env.BRIDGE_NO_OPEN !== '1' && connections.size === 0) openBrowser(url);
+  // The panel pops up exactly once: on first run, when nothing is configured.
+  if (process.env.BRIDGE_NO_OPEN !== '1' && connections.size === 0 && !account) openBrowser(url);
 });
 
 function openBrowser(url) {

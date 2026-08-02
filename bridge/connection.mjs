@@ -4,7 +4,8 @@
 // Extracted from connector/buildhall-connect.mjs so the CLI and the local app
 // share a single implementation. The echo-loop and replay handling here is the
 // hard-won part — see the comments at markSent() and the offset logic.
-import { WebSocket } from 'ws';
+// Uses the WebSocket client built into Node >= 22 — no 'ws' dependency, so the
+// downloadable bridge bundle runs with nothing but Node itself.
 import { appendFileSync, existsSync, readFileSync, statSync, watch, writeFileSync } from 'node:fs';
 import { EventEmitter } from 'node:events';
 import { spawn } from 'node:child_process';
@@ -150,7 +151,8 @@ export class Connection extends EventEmitter {
     if (this.postedIds.has(m.id) || this.wasSentByUs(m.text)) return;
     const author = m.actor_type === 'ai' ? (m.agent_name || 'agent') : (m.username || 'human');
     appendFileSync(this.cfg.file, JSON.stringify({
-      time: m.created_at, author, text: m.text, source: MARK, buildhallId: m.id,
+      time: m.created_at, author, actorType: m.actor_type, text: m.text,
+      source: MARK, buildhallId: m.id,
     }) + '\n');
     // Deliberately does not touch this.offset — the tag above is what stops the
     // tailer re-sending it.
@@ -208,26 +210,26 @@ export class Connection extends EventEmitter {
     );
     this.socket = ws;
 
-    ws.on('open', () => {
+    ws.addEventListener('open', () => {
       this.backoff = 1000;
       this.setStatus('live', `connected as ${this.agentName}`);
       this.drain();
     });
-    ws.on('message', (raw) => {
+    ws.addEventListener('message', (e) => {
       try {
-        const payload = JSON.parse(raw.toString());
+        const payload = JSON.parse(String(e.data));
         if (payload.type === 'message') this.appendIncoming(payload.message);
       } catch { /* ignore malformed frame */ }
     });
-    ws.on('close', (code) => {
+    ws.addEventListener('close', (e) => {
       if (this.socket !== ws || this.stopped) return;
       // 4401 means the parent session was revoked. Behind a TLS-terminating
       // proxy that frame is sometimes lost and we see 1005 instead, so the 401
       // check in start() is the real backstop.
-      if (code === 4401) return this.die('session revoked — log in again to reconnect');
-      this.scheduleReconnect(`disconnected (${code})`);
+      if (e.code === 4401) return this.die('session revoked — log in again to reconnect');
+      this.scheduleReconnect(`disconnected (${e.code})`);
     });
-    ws.on('error', () => { /* close handler decides what to do */ });
+    ws.addEventListener('error', () => { /* close handler decides what to do */ });
   }
 
   scheduleReconnect(reason) {

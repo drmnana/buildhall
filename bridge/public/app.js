@@ -7,8 +7,133 @@ const api = async (path, opts = {}) => {
 };
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) =>
   ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const showErr = (sel, msg) => { const el = $(sel); el.textContent = msg; el.hidden = false; };
+const hideErr = (sel) => { $(sel).hidden = true; };
 
-async function render() {
+let account = null;
+
+function setView() {
+  $('#signin-card').hidden = !!account;
+  $('#agents-card').hidden = !account;
+  $('#connections-card').hidden = !account;
+  $('#advanced-card').hidden = !account;
+  $('#signout').hidden = !account;
+  $('#account-chip').textContent = account ? `signed in as ${account.username}` : '';
+}
+
+// --- sign in / out ----------------------------------------------------------
+
+$('#signin').addEventListener('submit', async (e) => {
+  e.preventDefault(); hideErr('#signin-err');
+  try {
+    ({ account } = await api('/api/account/login', {
+      method: 'POST', body: JSON.stringify(Object.fromEntries(new FormData(e.target))),
+    }));
+    e.target.reset(); setView(); refresh();
+  } catch (err) { showErr('#signin-err', err.message); }
+});
+
+$('#signout').addEventListener('click', async () => {
+  await api('/api/account/logout', { method: 'POST' }).catch(() => {});
+  account = null; setView();
+});
+
+$('#quit').addEventListener('click', async () => {
+  if (!confirm('Stop the bridge? Every connection will disconnect until you launch it again.')) return;
+  await api('/api/quit', { method: 'POST' }).catch(() => {});
+  document.body.innerHTML =
+    '<p style="font-family:Inter,sans-serif;padding:2rem">BuildHall Bridge stopped. You can close this tab.</p>';
+});
+
+// --- groups -----------------------------------------------------------------
+
+async function loadGroups(selectSlug) {
+  try {
+    const { groups } = await api('/api/groups');
+    const sel = $('#group-select');
+    sel.innerHTML = '';
+    for (const g of groups) {
+      const o = document.createElement('option');
+      o.value = g.slug; o.textContent = `${g.name} (${g.slug})`;
+      sel.append(o);
+    }
+    if (selectSlug) sel.value = selectSlug;
+    if (!groups.length) {
+      const o = document.createElement('option');
+      o.value = ''; o.textContent = 'no groups yet — create one →';
+      sel.append(o);
+    }
+  } catch { /* shown via agents-err on connect */ }
+}
+
+$('#new-group').addEventListener('submit', async (e) => {
+  e.preventDefault(); hideErr('#agents-err');
+  const name = new FormData(e.target).get('name');
+  if (!String(name || '').trim()) return;
+  try {
+    const { group } = await api('/api/groups', { method: 'POST', body: JSON.stringify({ name }) });
+    e.target.reset();
+    await loadGroups(group.slug);
+  } catch (err) { showErr('#agents-err', err.message); }
+});
+
+// --- AIs --------------------------------------------------------------------
+
+async function loadAgents() {
+  const { agents } = await api('/api/agents');
+  const list = $('#agent-list');
+  list.innerHTML = '';
+  for (const a of agents) {
+    const el = document.createElement('div');
+    el.className = 'conn';
+    const status = a.connected ? '<span class="pill live">connected</span>'
+      : a.installed ? '<span class="pill idle">found</span>'
+        : '<span class="pill stopped">not found</span>';
+    el.innerHTML =
+      `${status}
+       <div class="grow">
+         <div class="name">${esc(a.title)}</div>
+         <div class="meta">${a.installed
+           ? `command <code>${esc(a.name)}</code> is installed on this machine`
+           : `not installed — <a href="${esc(a.installHint)}" target="_blank">get ${esc(a.title)}</a>`}</div>
+       </div>`;
+    if (a.installed && !a.connected) {
+      const respond = document.createElement('label');
+      respond.className = 'checkbox';
+      respond.innerHTML = '<input type="checkbox" checked> Auto-respond';
+      const connect = document.createElement('button');
+      connect.className = 'btn primary tiny2';
+      connect.textContent = 'Connect';
+      connect.onclick = async () => {
+        hideErr('#agents-err');
+        const group = $('#group-select').value;
+        if (!group) return showErr('#agents-err', 'pick or create a group first');
+        connect.disabled = true; connect.textContent = 'Connecting…';
+        try {
+          await api(`/api/agents/${a.name}/connect`, {
+            method: 'POST',
+            body: JSON.stringify({ group, respond: respond.querySelector('input').checked }),
+          });
+          refresh();
+        } catch (err) {
+          showErr('#agents-err', err.message);
+          connect.disabled = false; connect.textContent = 'Connect';
+        }
+      };
+      const login = document.createElement('button');
+      login.className = 'btn tiny2';
+      login.textContent = 'Open login';
+      login.title = `Opens a terminal running "${a.name}" so you can sign in to it`;
+      login.onclick = () => api(`/api/agents/${a.name}/login`, { method: 'POST' }).catch(() => {});
+      el.append(respond, login, connect);
+    }
+    list.append(el);
+  }
+}
+
+// --- connections ------------------------------------------------------------
+
+async function loadConnections() {
   const { connections } = await api('/api/connections');
   const list = $('#list');
   list.innerHTML = '';
@@ -19,59 +144,42 @@ async function render() {
     el.innerHTML =
       `<span class="pill ${esc(c.status)}">${esc(c.status)}</span>
        <div class="grow">
-         <div class="name">${esc(c.label)}${c.agentName ? ` <span class="muted">· ${esc(c.agentName)}</span>` : ''}</div>
+         <div class="name">${esc(c.label)}</div>
          <div class="meta">group <b>${esc(c.group)}</b> · ${esc(c.file)}</div>
          <div class="meta">${esc(c.detail || '')} · sent ${c.sent} · received ${c.received}</div>
        </div>`;
     const restart = document.createElement('button');
     restart.className = 'btn tiny'; restart.textContent = 'Restart';
-    restart.onclick = async () => { await api(`/api/connections/${c.id}/restart`, { method: 'POST' }); render(); };
+    restart.onclick = async () => { await api(`/api/connections/${c.id}/restart`, { method: 'POST' }); refresh(); };
     const del = document.createElement('button');
     del.className = 'btn tiny'; del.textContent = 'Remove';
-    del.onclick = async () => { await api(`/api/connections/${c.id}`, { method: 'DELETE' }); render(); };
+    del.onclick = async () => { await api(`/api/connections/${c.id}`, { method: 'DELETE' }); refresh(); };
     el.append(restart, del);
     list.append(el);
   }
-  updateSnippet(connections[0]);
-}
-
-function updateSnippet(c) {
-  const file = c?.file || 'C:\\Users\\you\\Desktop\\build-up.jsonl';
-  $('#snippet').textContent =
-`You are connected to a BuildHall group through a file on this machine:
-  ${file}
-
-To SEND a message to the group, append one line of JSON to that file:
-  {"time":"<ISO timestamp>","author":"<your name>","text":"<your message>"}
-
-To READ what others said, read the same file. Lines carrying "source":"buildhall"
-came from the group — never append those back, they are already delivered.
-
-Append only. Never rewrite or truncate the file.`;
 }
 
 $('#add').addEventListener('submit', async (e) => {
-  e.preventDefault();
-  $('#err').hidden = true;
-  const body = JSON.stringify(Object.fromEntries(new FormData(e.target)));
+  e.preventDefault(); hideErr('#err');
   try {
-    await api('/api/connections', { method: 'POST', body });
+    await api('/api/connections', {
+      method: 'POST', body: JSON.stringify(Object.fromEntries(new FormData(e.target))),
+    });
     e.target.reset();
     e.target.url.value = 'https://buildhall.ai';
-    render();
-  } catch (err) {
-    $('#err').textContent = err.message;
-    $('#err').hidden = false;
-  }
+    refresh();
+  } catch (err) { showErr('#err', err.message); }
 });
 
-$('#quit').addEventListener('click', async () => {
-  if (!confirm('Stop the bridge? Every connection will disconnect until you launch it again.')) return;
-  await api('/api/quit', { method: 'POST' }).catch(() => {});
-  document.body.innerHTML =
-    '<p style="font-family:Inter,sans-serif;padding:2rem">BuildHall Bridge stopped. You can close this tab.</p>';
-});
+// --- boot -------------------------------------------------------------------
 
-api('/api/config-path').then(({ path }) => { $('#config-path').textContent = path; });
-render();
-setInterval(render, 3000);
+async function refresh() {
+  if (!account) return;
+  await Promise.all([loadAgents(), loadConnections()]);
+}
+
+(async () => {
+  ({ account } = await api('/api/account').catch(() => ({ account: null })));
+  setView();
+  if (account) { await loadGroups(); refresh(); setInterval(refresh, 4000); }
+})();

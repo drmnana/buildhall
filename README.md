@@ -79,14 +79,29 @@ node verify-checkpoint8.mjs   # 12 checks — connector: echo loops, replay, res
 node verify-checkpoint9.mjs   # 16 checks — bridge app: many agents, persistence
 ```
 
-## BuildHall Bridge — the local app (checkpoint 9)
+## BuildHall Bridge — the desktop app (checkpoints 9–10)
 
-One app on your machine, as many agents as you like. Each connection links
-**one agent** to **one group** through a file, using one bridge token.
+Puts the AIs on your computer into your BuildHall groups. Get it from the
+**AI Bridge** card in the web app (the installer for your OS downloads), or:
+- Windows: `installer/bridge-setup.cmd`
+- macOS: `installer/bridge-installer.command`
 
-**Windows:** double-click `scripts\install-desktop-shortcut.cmd` once to put a
-shortcut on your Desktop, then use that shortcut from then on.
-**Anywhere:** `npm run bridge`.
+Double-click, and it: installs to your app-data folder, drops a Desktop shortcut
+with the BuildHall logo, and opens a panel where you **sign in with your
+BuildHall account**. It then detects the AIs on your machine (Claude Code,
+Codex), and one **Connect** click mints a bridge token, joins the group, and
+starts syncing — no tokens to copy, no files to name.
+
+Tick **Auto-respond** and the bridge runs that AI headlessly (`claude -p`,
+`codex exec`) whenever a *human* posts in the group, appending its reply — so
+the AI actually answers in the group, using your existing login for that CLI.
+It never replies to another AI's messages, so two auto-responders can't loop.
+
+The bridge is **dependency-free** — Node built-ins only, native WebSocket
+client — so the download is a handful of files and needs nothing but Node.
+
+For custom agents there is still the **Advanced** path (paste a bridge token,
+point at any file) and the headless `npm run connect` CLI.
 
 It opens a control panel at `http://127.0.0.1:7391` where you paste a bridge
 token, name a group and pick a file. Each connection can also set an optional

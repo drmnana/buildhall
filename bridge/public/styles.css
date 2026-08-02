@@ -36,3 +36,11 @@ input:focus{outline:2px solid #3C73AA;outline-offset:-1px}
 .empty{font-size:.87rem;color:var(--slate500)}
 pre{background:var(--navy);color:#E1E6EA;padding:.8rem .9rem;border-radius:9px;font-size:.78rem;line-height:1.55;white-space:pre-wrap;word-break:break-word;margin:.6rem 0 0}
 a{color:#1D4ED8}
+/* guided panel additions */
+.grouprow{display:flex;gap:.7rem;align-items:flex-end;margin-bottom:.8rem;flex-wrap:wrap}
+.grouprow .grow{flex:1;min-width:180px}
+select{font:inherit;font-size:.9rem;padding:.5rem .6rem;border:1px solid var(--slate300);border-radius:8px;width:100%;background:#fff}
+.newgroup{display:flex;gap:.4rem}
+.newgroup input{width:180px}
+.btn.tiny2{font-size:.8rem;padding:.3rem .6rem;white-space:nowrap}
+.conn code{background:var(--slate100);padding:.05rem .3rem;border-radius:4px;font-size:.8rem}

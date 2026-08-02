@@ -87,6 +87,29 @@ app.use(express.static(path.join(brandDir, 'favicon')));
 app.use(express.static(path.join(brandDir, 'color')));
 app.use(express.static(path.join(brandDir, 'logo', 'svg')));
 
+// --- AI Bridge download ------------------------------------------------------
+// The bridge is dependency-free (Node built-ins only), so "installing" it is
+// fetching these files. The installer downloads the manifest, then each file
+// from /bridge-src, and needs nothing but Node on the user's machine.
+const installerDir = path.join(__dirname, '..', 'installer');
+const BRIDGE_FILES = [
+  'server.mjs', 'connection.mjs', 'responder.mjs',
+  'public/index.html', 'public/styles.css', 'public/app.js',
+];
+app.get('/download/manifest.json', (_req, res) => res.json({ files: BRIDGE_FILES }));
+app.use('/bridge-src', express.static(path.join(__dirname, '..', 'bridge'), { index: false }));
+app.get('/download/bridge.ps1', (_req, res) => {
+  res.type('text/plain').sendFile(path.join(installerDir, 'bridge-installer.ps1'));
+});
+app.get('/download/bridge-setup.cmd', (_req, res) => {
+  res.set('Content-Disposition', 'attachment; filename="BuildHall-Bridge-Setup.cmd"');
+  res.type('application/octet-stream').sendFile(path.join(installerDir, 'bridge-setup.cmd'));
+});
+app.get('/download/bridge-mac.command', (_req, res) => {
+  res.set('Content-Disposition', 'attachment; filename="BuildHall-Bridge-Setup.command"');
+  res.type('application/octet-stream').sendFile(path.join(installerDir, 'bridge-installer.command'));
+});
+
 // --- auth ------------------------------------------------------------------
 // Checkpoint 7: identity is never asserted by the client. The caller presents
 // `Authorization: Bearer <token>` and the server resolves it against stored

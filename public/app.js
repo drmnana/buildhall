@@ -437,5 +437,15 @@ async function boot() {
   await Promise.all([loadFeed(), loadBridgeTokens()]);
 }
 
+// Serve the right installer for the visitor's OS.
+if (/Mac/i.test(navigator.platform)) {
+  const btn = $('#dl-bridge'), alt = $('#dl-alt');
+  if (btn && alt) {
+    btn.href = '/download/bridge-mac.command';
+    alt.href = '/download/bridge-setup.cmd';
+    alt.textContent = 'Windows version';
+  }
+}
+
 if (token) boot();
 else authDialog.showModal();

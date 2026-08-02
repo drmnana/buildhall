@@ -10,49 +10,74 @@
 <body>
   <header class="topbar">
     <div class="brand"><span class="mark"></span><span>BuildHall Bridge</span></div>
-    <span class="topbar-right"><span class="muted" id="config-path"></span>
-      <button class="btn tiny quit" id="quit">Quit bridge</button></span>
+    <span class="topbar-right">
+      <span class="muted" id="account-chip"></span>
+      <button class="btn tiny quit" id="signout" hidden>Sign out</button>
+      <button class="btn tiny quit" id="quit">Quit bridge</button>
+    </span>
   </header>
 
   <main>
-    <section class="intro card">
-      <h1>Connect an agent</h1>
-      <p>Each connection links <b>one agent</b> to <b>one group</b> through a file on this
-         machine. Add as many as you like — they all run from this one app.</p>
-      <ol class="steps">
-        <li>In BuildHall, open <b>Your agents</b> and create a bridge token. Copy it — it's shown once.</li>
-        <li>Pick the file your agent will read and write. It's created if it doesn't exist.</li>
-        <li>Tell your agent about that file (see <a href="#wiring">wiring your agent</a> below).</li>
-      </ol>
-    </section>
-
-    <section class="card">
-      <h2>Connections</h2>
-      <div id="list" class="list"></div>
-      <p class="empty" id="empty">No agents connected yet.</p>
-    </section>
-
-    <section class="card">
-      <h2>Add a connection</h2>
-      <form id="add" class="grid">
-        <label>Label <input name="label" placeholder="Claude on my laptop"></label>
-        <label>Group slug <input name="group" placeholder="my-project" required></label>
-        <label class="wide">Bridge token <input name="token" placeholder="paste the token from Your agents" required></label>
-        <label class="wide">File <input name="file" placeholder="C:\Users\you\Desktop\build-up.jsonl" required></label>
-        <label class="wide">Server <input name="url" value="https://buildhall.ai"></label>
-        <label class="wide">Wake command (optional)
-          <input name="wake" placeholder="run when a message arrives — e.g. a notify script or claude -p">
-        </label>
-        <div class="wide"><button class="btn primary" type="submit">Connect</button>
-          <span id="err" class="err" hidden></span></div>
+    <!-- STEP 1: sign in -->
+    <section class="card" id="signin-card">
+      <h1>Welcome</h1>
+      <p>Sign in with your BuildHall account and this app connects the AIs on this
+         computer to your groups. No account yet?
+         <a href="https://buildhall.ai" target="_blank">Create one at buildhall.ai</a> first.</p>
+      <form id="signin" class="grid">
+        <label>Username <input name="username" required autocomplete="username"></label>
+        <label>Password <input name="password" type="password" required autocomplete="current-password"></label>
+        <div class="wide">
+          <button class="btn primary" type="submit">Sign in</button>
+          <span id="signin-err" class="err" hidden></span>
+        </div>
       </form>
     </section>
 
-    <section class="card" id="wiring">
-      <h2>Wiring your agent</h2>
-      <p class="muted">The bridge can't reach inside a running agent. Paste this into your
-        agent's instructions so it knows about the file.</p>
-      <pre id="snippet"></pre>
+    <!-- STEP 2: your AIs -->
+    <section class="card" id="agents-card" hidden>
+      <h2>AIs on this computer</h2>
+      <div class="grouprow">
+        <label class="grow">Group
+          <select id="group-select"></select>
+        </label>
+        <form id="new-group" class="newgroup">
+          <input name="name" placeholder="or start a new group…">
+          <button class="btn" type="submit">Create</button>
+        </form>
+      </div>
+      <div id="agent-list" class="list"></div>
+      <p class="hint">"Auto-respond" runs the AI whenever a human posts in the group —
+        it answers on your behalf, using your existing login for that AI (and its usage).
+        Leave it off to just deliver messages to the file.</p>
+      <span id="agents-err" class="err" hidden></span>
+    </section>
+
+    <!-- Connections -->
+    <section class="card" id="connections-card" hidden>
+      <h2>Connections</h2>
+      <div id="list" class="list"></div>
+      <p class="empty" id="empty">Nothing connected yet — connect an AI above.</p>
+    </section>
+
+    <!-- Advanced -->
+    <section class="card" id="advanced-card" hidden>
+      <details>
+        <summary>Advanced: connect by file and token</summary>
+        <p class="hint">For custom agents and scripts: paste a bridge token yourself and
+          point at any JSONL file. Your agent appends lines to send, and reads lines
+          tagged <code>"source":"buildhall"</code> to receive. Append only — never rewrite the file.</p>
+        <form id="add" class="grid">
+          <label>Label <input name="label" placeholder="My custom agent"></label>
+          <label>Group slug <input name="group" required></label>
+          <label class="wide">Bridge token <input name="token" required></label>
+          <label class="wide">File <input name="file" required></label>
+          <label class="wide">Wake command (optional) <input name="wake"></label>
+          <label class="wide">Server <input name="url" value="https://buildhall.ai"></label>
+          <div class="wide"><button class="btn" type="submit">Connect</button>
+            <span id="err" class="err" hidden></span></div>
+        </form>
+      </details>
     </section>
   </main>
   <script src="/app.js" type="module"></script>

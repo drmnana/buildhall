@@ -6,7 +6,7 @@
 // are asserted here, along with the two ways a user gets it wrong: pasting a
 // login token instead of a bridge token, and pasting a dead one.
 import { spawn } from 'node:child_process';
-import { appendFileSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -19,6 +19,11 @@ const app = `http://127.0.0.1:${APP_PORT}`;
 const bridge = `http://127.0.0.1:${BRIDGE_PORT}`;
 const fileA = path.join(workDir, 'claude.jsonl');
 const fileB = path.join(workDir, 'codex.jsonl');
+
+// A fake `claude` CLI on PATH: detection finds it, and the responder invokes it.
+const binDir = mkdtempSync(path.join(tmpdir(), 'bh-bin9-'));
+writeFileSync(path.join(binDir, 'claude'), '#!/bin/sh\necho "auto-reply from fake claude"\n');
+chmodSync(path.join(binDir, 'claude'), 0o755);
 
 const results = [];
 const check = (n, ok, d = '') => { results.push({ n, ok }); console.log(`${ok ? 'PASS' : 'FAIL'} ${n}${d ? ' — ' + d : ''}`); };
@@ -37,6 +42,7 @@ const startBridge = () => {
       BRIDGE_PORT: String(BRIDGE_PORT),
       BRIDGE_CONFIG_DIR: cfgDir,
       BRIDGE_NO_OPEN: '1',      // never launch a browser inside a test
+      PATH: `${binDir}:${process.env.PATH}`,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -162,6 +168,69 @@ try {
     await waitFor(async () => (await conns()).every((c) => c.status === 'dead')),
     JSON.stringify((await conns()).map((c) => `${c.status}:${c.detail}`)));
 
+  // --- guided flow: sign in, detect, one-click connect, auto-respond -------
+  const panelLogin = await api(bridge, 'POST', '/api/account/login', {
+    body: { url: app, username: 'bridgeowner', password: 'bridge-owner-pw-1' },
+  });
+  check('panel sign-in works', panelLogin.status === 200 && panelLogin.json?.account?.username === 'bridgeowner',
+    JSON.stringify(panelLogin.json));
+
+  const agents = (await api(bridge, 'GET', '/api/agents')).json.agents;
+  const claudeAgent = agents.find((a) => a.name === 'claude');
+  check('claude CLI detected on this machine', claudeAgent?.installed === true,
+    JSON.stringify(agents.map((a) => `${a.name}:${a.installed}`)));
+
+  const mkGroup = await api(bridge, 'POST', '/api/groups', { body: { name: 'Guided Hall' } });
+  check('panel can create a group', mkGroup.status === 201 && mkGroup.json?.group?.slug === 'guided-hall',
+    JSON.stringify(mkGroup.json));
+  const proxied = (await api(bridge, 'GET', '/api/groups')).json.groups;
+  check('panel lists the account groups', proxied.some((g) => g.slug === 'guided-hall'));
+
+  const oneClick = await api(bridge, 'POST', '/api/agents/claude/connect', {
+    body: { group: 'guided-hall', respond: true },
+  });
+  check('one-click connect mints a token and starts a connection',
+    oneClick.status === 201 && oneClick.json?.connection?.label === 'bridgeowner claude',
+    JSON.stringify(oneClick.json));
+  check('guided connection reports live', await waitFor(async () =>
+    (await conns()).some((c) => c.group === 'guided-hall' && c.status === 'live')));
+
+  // A human posts; the fake CLI must answer as the agent — the full loop. The
+  // group is private (panel default), so the human is the owner: a fresh login
+  // session posting as themselves.
+  const human2 = (await api(app, 'POST', '/api/auth/login',
+    { body: { username: 'bridgeowner', password: 'bridge-owner-pw-1' } })).json.token;
+  await api(app, 'POST', '/api/groups/guided-hall/messages', { token: human2, body: { text: 'hello agent' } });
+  check('auto-respond: human message gets an AI reply in the group', await waitFor(async () => {
+    const msgs = (await api(app, 'GET', '/api/groups/guided-hall/messages', { token: human2 })).json.messages;
+    return msgs.some((x) => x.text === 'auto-reply from fake claude'
+      && x.actor_type === 'ai' && x.agent_name === 'bridgeowner claude');
+  }, 30000));
+
+  // Loop safety: agent-authored messages must NOT trigger a reply.
+  const aiTok = (await api(app, 'POST', '/api/auth/bridge-tokens',
+    { token: human2, body: { agentName: 'otherbot' } })).json.token;
+  await api(app, 'POST', '/api/groups/guided-hall/messages', { token: aiTok, body: { text: 'ai chatter' } });
+  await sleep(7000);
+  const finalMsgs = (await api(app, 'GET', '/api/groups/guided-hall/messages', { token: human2 })).json.messages;
+  check('responder ignores AI-authored messages (no agent-to-agent loop)',
+    finalMsgs.filter((x) => x.text === 'auto-reply from fake claude').length === 1,
+    `${finalMsgs.length} messages total`);
+
+  // --- download endpoints on the main server --------------------------------
+  const manifest = await api(app, 'GET', '/download/manifest.json');
+  check('download manifest lists the bridge files',
+    manifest.status === 200 && manifest.json?.files?.includes('server.mjs'));
+  const src = await fetch(`${app}/bridge-src/server.mjs`);
+  check('bridge source files are served', src.status === 200 && (await src.text()).includes('BuildHall Bridge'));
+  const ps1 = await fetch(`${app}/download/bridge.ps1`);
+  check('windows installer served', ps1.status === 200 && (await ps1.text()).includes('BuildHall'));
+  const cmd = await fetch(`${app}/download/bridge-setup.cmd`);
+  check('setup.cmd download served as attachment',
+    cmd.status === 200 && /attachment/.test(cmd.headers.get('content-disposition') || ''));
+  const traversal = await fetch(`${app}/bridge-src/../src/db.js`);
+  check('path traversal out of bridge-src is blocked', traversal.status !== 200, `status ${traversal.status}`);
+
   // --- quit endpoint --------------------------------------------------------
   const quit = await api(bridge, 'POST', '/api/quit');
   check('quit endpoint stops the app',
@@ -179,6 +248,6 @@ try {
   bridgeProc?.kill();
   server.kill();
   setTimeout(() => {
-    for (const d of [dataDir, workDir, cfgDir]) rmSync(d, { recursive: true, force: true });
+    for (const d of [dataDir, workDir, cfgDir, binDir]) rmSync(d, { recursive: true, force: true });
   }, 500);
 }

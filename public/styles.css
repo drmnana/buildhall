@@ -243,3 +243,7 @@ input:focus, select:focus, textarea:focus {
   .shell { grid-template-columns: 1fr; padding: 0.8rem; }
   .rail { position: static; }
 }
+
+/* download card */
+.btn.dl{display:block;text-align:center;text-decoration:none;margin-top:.2rem}
+.dl-alt{text-align:center;margin-top:.5rem}
