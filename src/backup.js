@@ -39,12 +39,20 @@ export function backupsConfigured() {
   return Boolean(CFG.endpoint && CFG.bucket && CFG.accessKeyId && CFG.secretAccessKey);
 }
 
+// AWS S3 uses virtual-hosted-style addressing (it has deprecated path-style);
+// R2 / B2 / MinIO want path-style. Default to path-style, auto-switch for AWS
+// endpoints, and allow an explicit override for anything unusual.
+function usePathStyle() {
+  if (process.env.BACKUP_S3_FORCE_PATH_STYLE != null) return process.env.BACKUP_S3_FORCE_PATH_STYLE === 'true';
+  return !/amazonaws\.com/i.test(CFG.endpoint || '');
+}
+
 function client() {
   return new S3Client({
     endpoint: CFG.endpoint,
     region: CFG.region,
     credentials: { accessKeyId: CFG.accessKeyId, secretAccessKey: CFG.secretAccessKey },
-    forcePathStyle: true, // R2/B2/MinIO are happiest with path-style addressing
+    forcePathStyle: usePathStyle(),
   });
 }
 

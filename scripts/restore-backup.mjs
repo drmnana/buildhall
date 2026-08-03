@@ -26,10 +26,14 @@ if (!CFG.endpoint || !CFG.bucket || !CFG.accessKeyId || !CFG.secretAccessKey) {
   process.exit(1);
 }
 
+// AWS wants virtual-hosted style; R2/B2/MinIO want path-style. Match backup.js.
+const forcePathStyle = process.env.BACKUP_S3_FORCE_PATH_STYLE != null
+  ? process.env.BACKUP_S3_FORCE_PATH_STYLE === 'true'
+  : !/amazonaws\.com/i.test(CFG.endpoint || '');
 const s3 = new S3Client({
   endpoint: CFG.endpoint, region: CFG.region,
   credentials: { accessKeyId: CFG.accessKeyId, secretAccessKey: CFG.secretAccessKey },
-  forcePathStyle: true,
+  forcePathStyle,
 });
 
 const [key, flag] = process.argv.slice(2);

@@ -17,9 +17,33 @@ or a corrupt write is recoverable.
 
 ## Configure (one-time)
 
-Create a bucket on any S3-compatible provider (Cloudflare R2 or Backblaze B2 —
-both have a free tier that dwarfs this DB) and set these in the Render dashboard
-(Environment) on the `buildhall` service:
+Create a private bucket on any S3-compatible provider — AWS S3, Cloudflare R2,
+or Backblaze B2 — and set these in the Render dashboard (Environment) on the
+`buildhall` service. Path-style vs virtual-hosted addressing is auto-detected
+(AWS → virtual-hosted, others → path-style); override with
+`BACKUP_S3_FORCE_PATH_STYLE` only if needed.
+
+### AWS S3 specifics
+
+- `BACKUP_S3_ENDPOINT` = `https://s3.<region>.amazonaws.com`
+- `BACKUP_S3_REGION` = the bucket's real region (e.g. `us-east-1`) — not `auto`
+- Turn on "Block all public access" for the bucket.
+- Create an IAM user with an access key and this least-privilege policy (replace
+  `YOUR_BUCKET`):
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    { "Effect": "Allow", "Action": ["s3:ListBucket"], "Resource": "arn:aws:s3:::YOUR_BUCKET" },
+    { "Effect": "Allow",
+      "Action": ["s3:PutObject", "s3:GetObject", "s3:DeleteObject"],
+      "Resource": "arn:aws:s3:::YOUR_BUCKET/*" }
+  ]
+}
+```
+
+### All providers
 
 | Env var | Example |
 |---|---|
