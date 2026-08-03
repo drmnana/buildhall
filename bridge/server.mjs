@@ -505,6 +505,12 @@ async function handle(req, res) {
 
 // --- boot --------------------------------------------------------------------
 
+// Ensure the config dir exists up front. Otherwise the first thing a fresh user
+// does — click "Test" before logging in — runs the agent with a cwd that does
+// not exist yet, and spawnSync fails with a bare ENOENT that reads as "CLI not
+// found" even though the CLI is installed.
+try { mkdirSync(CONFIG_DIR, { recursive: true }); } catch { /* created on first save */ }
+
 loadConfig();
 
 const server = createServer((req, res) => {

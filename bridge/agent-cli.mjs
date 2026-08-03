@@ -13,7 +13,7 @@
 // Codex is launched via `powershell.exe -File codex.ps1` because it ships as a
 // PowerShell/.cmd shim with no bare-executable on PATH.
 import { spawnSync } from 'node:child_process';
-import { appendFileSync } from 'node:fs';
+import { appendFileSync, existsSync } from 'node:fs';
 import { extname, dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 
@@ -58,7 +58,9 @@ function buildInvocation(agent, bin, prompt, dir) {
 export function invokeAgent(agent, command, prompt, dir) {
   if (agent !== 'claude' && agent !== 'codex') return { ok: false, error: `unknown agent "${agent}"` };
   const bin = command || agent;
-  const workdir = dir || homedir();
+  // A non-existent cwd makes spawnSync throw ENOENT that looks exactly like a
+  // missing CLI. Fall back to the home dir so a valid binary always runs.
+  const workdir = dir && existsSync(dir) ? dir : homedir();
   const { cmd, args } = buildInvocation(agent, bin, prompt, workdir);
   // A Finder/GUI-launched bridge inherits a stripped PATH, so the agent CLI
   // can't find `node` or its own helpers. Append the real bin dirs on
