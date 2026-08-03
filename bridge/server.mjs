@@ -10,7 +10,7 @@
 // Config lives in ~/.buildhall/bridge.json: the signed-in BuildHall account's
 // session token plus every connection. Written owner-only, outside any repo.
 import { createServer } from 'node:http';
-import { readFileSync, writeFileSync, existsSync, mkdirSync, chmodSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, chmodSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
@@ -143,6 +143,32 @@ function detectAgent(name) {
   };
 }
 
+// The bin dirs a macOS/Linux CLI actually installs to, which a GUI-launched
+// process does NOT get on its PATH: double-clicking the launcher runs under a
+// stripped Finder/login PATH (roughly /usr/bin:/bin + /etc/paths), never the
+// user's interactive shell, so Homebrew-on-Apple-Silicon (/opt/homebrew/bin),
+// nvm, and Claude Code's own dir are all invisible. `which` then finds nothing
+// even though the CLI runs fine in Terminal — the Mac twin of the Windows shim
+// problem. We enumerate the real locations, including versioned nvm installs.
+function unixBinDirs() {
+  const home = homedir();
+  const dirs = [
+    '/opt/homebrew/bin',                 // Homebrew on Apple Silicon (most modern Macs)
+    '/usr/local/bin',                    // Homebrew on Intel, nodejs.org pkg, npm default
+    path.join(home, '.local', 'bin'),    // Claude Code, pipx, many CLIs
+    path.join(home, '.claude', 'local'), // Claude Code native installer
+    path.join(home, '.npm-global', 'bin'),
+    path.join(home, '.bun', 'bin'),
+    '/usr/bin',
+  ];
+  // nvm keeps node/npm bins under versioned dirs — add each installed version.
+  try {
+    const nvmRoot = path.join(home, '.nvm', 'versions', 'node');
+    for (const v of readdirSync(nvmRoot)) dirs.push(path.join(nvmRoot, v, 'bin'));
+  } catch { /* no nvm */ }
+  return dirs;
+}
+
 // Check the places these CLIs actually install to, for when they are not on the
 // bridge process's PATH. codex ships to npm's global bin as a .ps1/.cmd shim;
 // prefer .ps1 for codex because it runs cleanly through `powershell -File` (the
@@ -151,9 +177,7 @@ function probeKnownLocations(name) {
   const roots = [];
   if (process.env.APPDATA) roots.push(path.join(process.env.APPDATA, 'npm'));
   if (process.env.LOCALAPPDATA) roots.push(path.join(process.env.LOCALAPPDATA, 'npm'));
-  if (process.platform !== 'win32') {
-    roots.push('/usr/local/bin', path.join(homedir(), '.local', 'bin'), path.join(homedir(), '.npm-global', 'bin'));
-  }
+  if (process.platform !== 'win32') roots.push(...unixBinDirs());
   // On Windows, NEVER fall back to the bare extensionless name for codex: npm
   // drops an extensionless bash shim there that Node's spawnSync cannot execute
   // (ENOENT). Only runnable shims (.ps1/.cmd/.exe/.bat) are offered.
@@ -179,9 +203,14 @@ function whereIs(name) {
     ? [`${name}.ps1`, `${name}.cmd`, `${name}.exe`, `${name}.bat`, name]
     : [`${name}.cmd`, `${name}.exe`, `${name}.bat`, `${name}.ps1`, name];
   const candidates = process.platform === 'win32' ? winOrder : [name];
+  // On macOS/Linux, run `which` with the real install dirs appended to PATH, so
+  // it resolves CLIs that a GUI-stripped launch PATH would otherwise hide.
+  const env = process.platform === 'win32'
+    ? process.env
+    : { ...process.env, PATH: [process.env.PATH || '', ...unixBinDirs()].filter(Boolean).join(':') };
   for (const c of candidates) {
     try {
-      const r = spawnSync(finder, [c], { encoding: 'utf8' });
+      const r = spawnSync(finder, [c], { encoding: 'utf8', env });
       const lines = (r.stdout || '').split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
       // On Windows only accept a hit that ends in a runnable extension: `where`
       // lists the extensionless bash shim first, and spawnSync cannot run it.

@@ -60,11 +60,24 @@ export function invokeAgent(agent, command, prompt, dir) {
   const bin = command || agent;
   const workdir = dir || homedir();
   const { cmd, args } = buildInvocation(agent, bin, prompt, workdir);
+  // A Finder/GUI-launched bridge inherits a stripped PATH, so the agent CLI
+  // can't find `node` or its own helpers. Append the real bin dirs on
+  // macOS/Linux (harmless if already present); leave Windows PATH untouched.
+  const env = process.platform === 'win32' ? process.env : {
+    ...process.env,
+    PATH: [
+      process.env.PATH || '',
+      '/opt/homebrew/bin', '/usr/local/bin', '/usr/bin',
+      join(homedir(), '.local', 'bin'), join(homedir(), '.claude', 'local'),
+      join(homedir(), '.npm-global', 'bin'),
+    ].filter(Boolean).join(':'),
+  };
   const opts = {
     encoding: 'utf8',
     timeout: 180000,
     windowsHide: true,
     cwd: workdir,
+    env,
     maxBuffer: 16 * 1024 * 1024,
     // shell:false (default) — args are passed verbatim, so the multi-line
     // prompt is never re-parsed by a shell.

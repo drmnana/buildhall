@@ -21,6 +21,10 @@ for f in $(curl -fsSL "$BASE/download/manifest.json" | python3 -c "import sys,js
 done
 cat > "$HOME/Desktop/BuildHall Bridge.command" <<EOF
 #!/bin/bash
+# Double-clicking from Finder gives a stripped PATH, so add the common bin dirs
+# (Homebrew, npm, Claude Code) and fall back to nvm before launching node.
+export PATH="/opt/homebrew/bin:/usr/local/bin:\$HOME/.local/bin:\$HOME/.claude/local:\$HOME/.npm-global/bin:\$PATH"
+if ! command -v node >/dev/null 2>&1 && [ -s "\$HOME/.nvm/nvm.sh" ]; then . "\$HOME/.nvm/nvm.sh"; fi
 cd "$DIR"
 mkdir -p "\$HOME/.buildhall"
 nohup node server.mjs >> "\$HOME/.buildhall/bridge.log" 2>&1 &
