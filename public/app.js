@@ -437,15 +437,35 @@ async function boot() {
   await Promise.all([loadFeed(), loadBridgeTokens()]);
 }
 
-// Serve the right installer for the visitor's OS.
-if (/Mac/i.test(navigator.platform)) {
-  const btn = $('#dl-bridge'), alt = $('#dl-alt');
-  if (btn && alt) {
-    btn.href = '/download/bridge-mac.command';
-    alt.href = '/download/bridge-setup.cmd';
-    alt.textContent = 'Windows version';
-  }
+// Show the right install method for the visitor's OS: a download for Windows,
+// a paste-in-Terminal one-liner for macOS (a downloaded .command is blocked by
+// Gatekeeper). Either can be toggled to the other by the links in each block.
+const dlWin = $('#dl-win'), dlMac = $('#dl-mac');
+function showInstaller(isMac) {
+  if (dlWin) dlWin.hidden = !!isMac;
+  if (dlMac) dlMac.hidden = !isMac;
 }
+const looksMac = /Mac|iP(hone|ad|od)/i.test(navigator.platform || '')
+  || /Mac OS X/i.test(navigator.userAgent || '');
+showInstaller(looksMac);
+$('#show-mac')?.addEventListener('click', (e) => { e.preventDefault(); showInstaller(true); });
+$('#show-win')?.addEventListener('click', (e) => { e.preventDefault(); showInstaller(false); });
+$('#copy-cmd')?.addEventListener('click', async () => {
+  const cmd = $('#mac-cmd')?.textContent?.trim() || '';
+  const btn = $('#copy-cmd');
+  try {
+    await navigator.clipboard.writeText(cmd);
+    btn.textContent = 'Copied';
+    setTimeout(() => { btn.textContent = 'Copy'; }, 1500);
+  } catch {
+    // Clipboard blocked — select the text so the user can copy manually.
+    const range = document.createRange();
+    range.selectNodeContents($('#mac-cmd'));
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+  }
+});
 
 if (token) boot();
 else authDialog.showModal();
