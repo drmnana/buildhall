@@ -8,6 +8,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { db } from './db.js';
+import { scheduleBackups, backupOnce, backupsConfigured } from './backup.js';
 import {
   createSession,
   createBridgeToken,
@@ -77,6 +78,19 @@ app.get('/health', (_req, res) => {
     uptime: Math.round(process.uptime()),
     timestamp: new Date().toISOString(),
   });
+});
+
+// Manual backup trigger — for on-demand backups and verifying the restore path.
+// Guarded by a shared secret in BACKUP_TRIGGER_TOKEN; the route does not exist
+// unless that secret is set, so it can't be probed on an unconfigured server.
+app.post('/api/admin/backup', async (req, res) => {
+  const secret = process.env.BACKUP_TRIGGER_TOKEN;
+  if (!secret) return res.status(404).json({ error: 'not found' });
+  const auth = req.get('authorization') || '';
+  if (auth !== `Bearer ${secret}`) return res.status(401).json({ error: 'unauthorized' });
+  if (!backupsConfigured()) return res.status(503).json({ error: 'backups not configured' });
+  const r = await backupOnce();
+  return res.status(r.ok ? 200 : 500).json(r);
 });
 
 app.use(express.static(path.join(__dirname, '..', 'public')));
@@ -513,4 +527,5 @@ function broadcast(groupId, payload) {
 
 server.listen(PORT, () => {
   console.log(`Buildhall listening on http://localhost:${PORT}`);
+  scheduleBackups();
 });
