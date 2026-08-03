@@ -1,13 +1,14 @@
 // Buildhall sync server — Express REST API + websocket fan-out.
-// Auth is a dev-grade username handshake for now (no passwords); real auth is
-// a flagged follow-up before any public deployment.
+// Storage is Postgres (see db.js); every request handler is async and awaits
+// the data-access layer. Auth is session-bound (checkpoint 7): identity comes
+// only from a server-minted token, never from anything the client asserts.
 import express from 'express';
 import { createServer } from 'node:http';
 import { WebSocketServer, WebSocket } from 'ws';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { db } from './db.js';
+import { pool, init } from './db.js';
 import { scheduleBackups, backupOnce, backupsConfigured } from './backup.js';
 import {
   createSession,
@@ -34,13 +35,12 @@ import {
   REGISTER_WINDOW_MS,
 } from './rate-limit.js';
 import {
-  getUser,
-  createGroup,
   getGroupBySlug,
   getGroupById,
   listGroupsForUser,
   getMembership,
   joinGroup,
+  createGroup,
   addMessage,
   getMessageInGroup,
   listMessages,
@@ -51,6 +51,11 @@ import {
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 3000;
+
+// Wrap an async route handler / middleware so a rejected promise becomes
+// next(err) instead of an unhandled rejection that hangs the request. Express 4
+// does not await handlers, so every async one goes through this.
+const ah = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 
 const app = express();
 // Render terminates TLS at its load balancer, so the socket address is always
@@ -63,12 +68,12 @@ app.use(express.json({ limit: '256kb' }));
 // --- health check ----------------------------------------------------------
 // Declared before the static middleware so a file named health/ in public or
 // brand can never shadow it. Render polls this to gate deploys and to restart
-// unhealthy instances, so it also pings SQLite: a process that is up but whose
-// database is unreachable is not actually serving, and should not report ok.
-app.get('/health', (_req, res) => {
+// unhealthy instances, so it also pings the database: a process that is up but
+// whose database is unreachable is not actually serving, and reports 503.
+app.get('/health', ah(async (_req, res) => {
   let dbOk = true;
   try {
-    db.prepare('SELECT 1').get();
+    await pool.query('SELECT 1');
   } catch {
     dbOk = false;
   }
@@ -78,12 +83,12 @@ app.get('/health', (_req, res) => {
     uptime: Math.round(process.uptime()),
     timestamp: new Date().toISOString(),
   });
-});
+}));
 
 // Manual backup trigger — for on-demand backups and verifying the restore path.
 // Guarded by a shared secret in BACKUP_TRIGGER_TOKEN; the route does not exist
 // unless that secret is set, so it can't be probed on an unconfigured server.
-app.post('/api/admin/backup', async (req, res) => {
+app.post('/api/admin/backup', ah(async (req, res) => {
   const secret = process.env.BACKUP_TRIGGER_TOKEN;
   if (!secret) return res.status(404).json({ error: 'not found' });
   const auth = req.get('authorization') || '';
@@ -91,7 +96,7 @@ app.post('/api/admin/backup', async (req, res) => {
   if (!backupsConfigured()) return res.status(503).json({ error: 'backups not configured' });
   const r = await backupOnce();
   return res.status(r.ok ? 200 : 500).json(r);
-});
+}));
 
 app.use(express.static(path.join(__dirname, '..', 'public')));
 
@@ -166,7 +171,7 @@ const registerByIp = createRateLimiter({
   countAllRequests: true,
 });
 
-app.post('/api/auth/register', registerByIp, (req, res) => {
+app.post('/api/auth/register', registerByIp, ah(async (req, res) => {
   const username = String(req.body?.username || '').trim();
   const password = String(req.body?.password || '');
   if (!USERNAME_RE.test(username)) {
@@ -177,16 +182,16 @@ app.post('/api/auth/register', registerByIp, (req, res) => {
   }
   // Taken means taken, including legacy passwordless rows. Letting a caller
   // set a password on an existing account would be account takeover.
-  if (getUserByUsername(username)) return res.status(409).json({ error: 'username already taken' });
-  const user = createUserWithPassword(username, password);
-  const { token } = createSession(user.id);
+  if (await getUserByUsername(username)) return res.status(409).json({ error: 'username already taken' });
+  const user = await createUserWithPassword(username, password);
+  const { token } = await createSession(user.id);
   res.status(201).json({ user: publicUser(user), token });
-});
+}));
 
-app.post('/api/auth/login', loginByUsername, loginByIp, (req, res) => {
+app.post('/api/auth/login', loginByUsername, loginByIp, ah(async (req, res) => {
   const username = String(req.body?.username || '').trim();
   const password = String(req.body?.password || '');
-  const user = getUserByUsername(username);
+  const user = await getUserByUsername(username);
   // One generic failure for unknown user, legacy NULL hash, and wrong
   // password, so the response cannot be used to enumerate accounts.
   if (!user || !verifyPassword(password, user.password_hash)) {
@@ -196,17 +201,17 @@ app.post('/api/auth/login', loginByUsername, loginByIp, (req, res) => {
   // A correct password clears the counters, so a legitimate user is never
   // locked out by their own earlier typos.
   resetOnSuccess(req);
-  const { token } = createSession(user.id);
+  const { token } = await createSession(user.id);
   res.json({ user: publicUser(user), token });
-});
+}));
 
-function requireUser(req, res, next) {
-  const identity = resolveToken(bearerToken(req));
+const requireUser = ah(async (req, res, next) => {
+  const identity = await resolveToken(bearerToken(req));
   if (!identity) return res.status(401).json({ error: 'authentication required' });
   req.user = identity.user;
   req.identity = identity;
   next();
-}
+});
 
 /** Bridge tokens may read and post, but must not manage the session itself. */
 function requireSessionToken(req, res, next) {
@@ -224,21 +229,21 @@ app.get('/api/auth/me', requireUser, (req, res) => {
   });
 });
 
-app.post('/api/auth/logout', requireUser, requireSessionToken, (req, res) => {
-  const { revokedBridgeTokenIds } = revokeSession(req.identity.sessionId);
+app.post('/api/auth/logout', requireUser, requireSessionToken, ah(async (req, res) => {
+  const { revokedBridgeTokenIds } = await revokeSession(req.identity.sessionId);
   // Revoking rows does not disconnect anyone: sockets already open would keep
   // streaming. Tear them down here so "log out" genuinely severs the agent.
   const closed = closeSocketsForSession(req.identity.sessionId);
   res.json({ ok: true, revokedBridgeTokens: revokedBridgeTokenIds.length, closedConnections: closed });
-});
+}));
 
 // --- bridge tokens (agent/connector credentials) ---------------------------
 
-app.get('/api/auth/bridge-tokens', requireUser, requireSessionToken, (req, res) => {
-  res.json({ bridgeTokens: listBridgeTokens(req.identity.sessionId) });
-});
+app.get('/api/auth/bridge-tokens', requireUser, requireSessionToken, ah(async (req, res) => {
+  res.json({ bridgeTokens: await listBridgeTokens(req.identity.sessionId) });
+}));
 
-app.post('/api/auth/bridge-tokens', requireUser, requireSessionToken, (req, res) => {
+app.post('/api/auth/bridge-tokens', requireUser, requireSessionToken, ah(async (req, res) => {
   const agentName = String(req.body?.agentName || '').trim();
   if (!/^[a-z0-9 _.-]{2,32}$/i.test(agentName)) {
     return res.status(400).json({ error: 'agentName must be 2-32 chars: letters, digits, space, _ . or -' });
@@ -248,29 +253,29 @@ app.post('/api/auth/bridge-tokens', requireUser, requireSessionToken, (req, res)
   // group always sees whose agent it is, and nobody can name their agent after
   // someone else's.
   const composedName = `${req.user.username} ${agentName}`;
-  const { token, bridgeTokenId } = createBridgeToken(req.identity.sessionId, req.user.id, composedName);
+  const { token, bridgeTokenId } = await createBridgeToken(req.identity.sessionId, req.user.id, composedName);
   // Returned once and never retrievable again — only its digest is stored.
   res.status(201).json({ bridgeTokenId, agentName: composedName, token });
-});
+}));
 
-app.delete('/api/auth/bridge-tokens/:id', requireUser, requireSessionToken, (req, res) => {
+app.delete('/api/auth/bridge-tokens/:id', requireUser, requireSessionToken, ah(async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: 'invalid bridge token id' });
-  if (!revokeBridgeToken(req.identity.sessionId, id)) {
+  if (!(await revokeBridgeToken(req.identity.sessionId, id))) {
     return res.status(404).json({ error: 'no such live bridge token on this session' });
   }
   res.json({ ok: true, closedConnections: closeSocketsForBridgeToken(id) });
-});
+}));
 
 // --- groups ----------------------------------------------------------------
 
-app.get('/api/feed', (_req, res) => res.json({ groups: publicFeed() }));
+app.get('/api/feed', ah(async (_req, res) => res.json({ groups: await publicFeed() })));
 
-app.get('/api/groups', requireUser, (req, res) => {
-  res.json({ groups: listGroupsForUser(req.user.id) });
-});
+app.get('/api/groups', requireUser, ah(async (req, res) => {
+  res.json({ groups: await listGroupsForUser(req.user.id) });
+}));
 
-app.post('/api/groups', requireUser, (req, res) => {
+app.post('/api/groups', requireUser, ah(async (req, res) => {
   const { slug, name, description, goal, visibility } = req.body ?? {};
   if (!/^[a-z0-9-]{2,48}$/.test(String(slug || ''))) {
     return res.status(400).json({ error: 'slug must be 2-48 chars: lowercase letters, digits, -' });
@@ -281,39 +286,39 @@ app.post('/api/groups', requireUser, (req, res) => {
   if (String(description || '').length > 500 || String(goal || '').length > 500) {
     return res.status(400).json({ error: 'description and goal must be 500 characters or fewer' });
   }
-  // reject unknown visibility here so it's a 400, not a SQLite CHECK failure (500)
+  // reject unknown visibility here so it's a 400, not a database CHECK failure (500)
   if (visibility != null && !['public', 'unlisted', 'private'].includes(visibility)) {
     return res.status(400).json({ error: "visibility must be 'public', 'unlisted' or 'private'" });
   }
-  if (getGroupBySlug(slug)) return res.status(409).json({ error: 'slug already taken' });
-  const group = createGroup({
+  if (await getGroupBySlug(slug)) return res.status(409).json({ error: 'slug already taken' });
+  const group = await createGroup({
     slug, name: trimmedName, description, goal, visibility, createdBy: req.user.id,
   });
   res.status(201).json({ group });
-});
+}));
 
-app.post('/api/groups/:slug/join', requireUser, (req, res) => {
-  const group = getGroupBySlug(req.params.slug);
+app.post('/api/groups/:slug/join', requireUser, ah(async (req, res) => {
+  const group = await getGroupBySlug(req.params.slug);
   if (!group) return res.status(404).json({ error: 'no such group' });
-  if (group.visibility === 'private' && !getMembership(group.id, req.user.id)) {
+  if (group.visibility === 'private' && !(await getMembership(group.id, req.user.id))) {
     return res.status(403).json({ error: 'group is private — ask an admin for an invite' });
   }
-  res.json({ membership: joinGroup(group.id, req.user.id) });
-});
+  res.json({ membership: await joinGroup(group.id, req.user.id) });
+}));
 
 // --- messages --------------------------------------------------------------
 
-function requireMember(req, res, next) {
-  const group = getGroupBySlug(req.params.slug);
+const requireMember = ah(async (req, res, next) => {
+  const group = await getGroupBySlug(req.params.slug);
   if (!group) return res.status(404).json({ error: 'no such group' });
-  const membership = getMembership(group.id, req.user.id);
+  const membership = await getMembership(group.id, req.user.id);
   if (!membership && group.visibility === 'private') {
     return res.status(403).json({ error: 'not a member of this group' });
   }
   req.group = group;
   req.membership = membership;
   next();
-}
+});
 
 // Query params must be non-negative integers; anything else is a 400 rather
 // than silently coercing to 0 and returning the wrong page.
@@ -323,7 +328,7 @@ function intParam(value, fallback) {
   return Number.isInteger(n) && n >= 0 ? n : null;
 }
 
-app.get('/api/groups/:slug/messages', requireUser, requireMember, (req, res) => {
+app.get('/api/groups/:slug/messages', requireUser, requireMember, ah(async (req, res) => {
   if (req.query.after !== undefined && req.query.before !== undefined) {
     return res.status(400).json({ error: 'after and before are mutually exclusive — pass one or neither' });
   }
@@ -334,38 +339,36 @@ app.get('/api/groups/:slug/messages', requireUser, requireMember, (req, res) => 
     return res.status(400).json({ error: 'after, before and limit must be non-negative integers' });
   }
   res.json({
-    messages: listMessages(req.group.id, {
+    messages: await listMessages(req.group.id, {
       afterId, beforeId, limit: Math.min(Math.max(limit, 1), 200),
     }),
   });
-});
+}));
 
-app.get('/api/groups/:slug/checkpoints', requireUser, requireMember, (req, res) => {
-  res.json({ checkpoints: listCheckpoints(req.group.id) });
-});
+app.get('/api/groups/:slug/checkpoints', requireUser, requireMember, ah(async (req, res) => {
+  res.json({ checkpoints: await listCheckpoints(req.group.id) });
+}));
 
 // Catch-up slice for agents: the newest `limit` messages in reading order,
 // plus the latest checkpoint so the caller knows where summarized history ends.
-app.get('/api/groups/:slug/context', requireUser, requireMember, (req, res) => {
+app.get('/api/groups/:slug/context', requireUser, requireMember, ah(async (req, res) => {
   const limit = intParam(req.query.limit, 50);
   if (limit === null || limit < 1) {
     return res.status(400).json({ error: 'limit must be a positive integer' });
   }
-  const [checkpoint] = listCheckpoints(req.group.id, 1);
+  const [checkpoint] = await listCheckpoints(req.group.id, 1);
   res.json({
     checkpoint: checkpoint ?? null,
-    messages: lastMessages(req.group.id, limit),
+    messages: await lastMessages(req.group.id, limit),
   });
-});
+}));
 
-app.post('/api/groups/:slug/messages', requireUser, requireMember, (req, res) => {
+app.post('/api/groups/:slug/messages', requireUser, requireMember, ah(async (req, res) => {
   if (!req.membership) return res.status(403).json({ error: 'join the group to post' });
   const { kind, text, pinnedMessageId } = req.body ?? {};
   // Attribution is derived from the credential, never from the request body.
-  // Previously a caller could set actorType/agentName freely, so any human
-  // could post as any agent — the same class of spoof as the old x-user-id
-  // header. A bridge token posts as its own agent; a login session posts as
-  // the human. Neither can claim to be the other.
+  // A bridge token posts as its own agent; a login session posts as the human.
+  // Neither can claim to be the other.
   const actorType = req.identity.kind === 'bridge' ? 'ai' : 'human';
   const agentName = req.identity.kind === 'bridge' ? req.identity.agentName : null;
   if (kind != null && !['message', 'checkpoint'].includes(kind)) {
@@ -382,14 +385,14 @@ app.post('/api/groups/:slug/messages', requireUser, requireMember, (req, res) =>
       return res.status(400).json({ error: 'pinnedMessageId is only allowed on checkpoints' });
     }
     pinId = Number(pinnedMessageId);
-    if (!Number.isInteger(pinId) || pinId <= 0 || !getMessageInGroup(req.group.id, pinId)) {
+    if (!Number.isInteger(pinId) || pinId <= 0 || !(await getMessageInGroup(req.group.id, pinId))) {
       return res.status(400).json({ error: 'pinnedMessageId must reference a message in this group' });
     }
   }
   const body = String(text || '').trim();
   if (!body) return res.status(400).json({ error: 'text is required' });
   if (body.length > 4000) return res.status(400).json({ error: 'text must be 4000 characters or fewer' });
-  const message = addMessage({
+  const message = await addMessage({
     groupId: req.group.id,
     userId: req.user.id,
     actorType,
@@ -400,6 +403,16 @@ app.post('/api/groups/:slug/messages', requireUser, requireMember, (req, res) =>
   });
   broadcast(req.group.id, { type: 'message', message });
   res.status(201).json({ message });
+}));
+
+// --- error handler ----------------------------------------------------------
+// Any handler that throws (or whose promise rejects via ah) lands here. Log the
+// real error server-side; return a generic 500 so internals never leak.
+// eslint-disable-next-line no-unused-vars
+app.use((err, req, res, next) => {
+  console.error('request error:', err);
+  if (res.headersSent) return;
+  res.status(500).json({ error: 'internal error' });
 });
 
 // --- websocket fan-out -----------------------------------------------------
@@ -441,7 +454,15 @@ function rejectUpgrade(socket, status, reason) {
   socket.destroy();
 }
 
+// Auth now touches the database (async). Any thrown/rejected error rejects the
+// upgrade rather than crashing the process.
 server.on('upgrade', (req, socket, head) => {
+  handleUpgrade(req, socket, head).catch(() => {
+    try { rejectUpgrade(socket, 500, 'Internal Server Error'); } catch { /* socket gone */ }
+  });
+});
+
+async function handleUpgrade(req, socket, head) {
   let url;
   try {
     url = new URL(req.url, 'http://localhost');
@@ -450,14 +471,14 @@ server.on('upgrade', (req, socket, head) => {
   }
   if (url.pathname !== '/ws') return rejectUpgrade(socket, 404, 'Not Found');
 
-  const identity = resolveToken(tokenFromHandshake(req));
+  const identity = await resolveToken(tokenFromHandshake(req));
   if (!identity) return rejectUpgrade(socket, 401, 'Unauthorized');
 
   const groupId = Number(url.searchParams.get('groupId'));
   if (!groupId) return rejectUpgrade(socket, 400, 'Bad Request');
-  const group = getGroupById(groupId);
+  const group = await getGroupById(groupId);
   if (!group) return rejectUpgrade(socket, 404, 'Not Found');
-  if (group.visibility === 'private' && !getMembership(groupId, identity.user.id)) {
+  if (group.visibility === 'private' && !(await getMembership(groupId, identity.user.id))) {
     return rejectUpgrade(socket, 403, 'Forbidden');
   }
 
@@ -477,7 +498,7 @@ server.on('upgrade', (req, socket, head) => {
     });
     wss.emit('connection', ws, req);
   });
-});
+}
 
 /** Close every live socket opened with this session or any of its children. */
 function closeSocketsForSession(sessionId) {
@@ -525,7 +546,16 @@ function broadcast(groupId, payload) {
   }
 }
 
-server.listen(PORT, () => {
-  console.log(`Buildhall listening on http://localhost:${PORT}`);
-  scheduleBackups();
-});
+// Create the schema, then start serving. A failed DB init is fatal — better to
+// crash the deploy than to serve a broken instance that health-checks as down.
+init()
+  .then(() => {
+    server.listen(PORT, () => {
+      console.log(`Buildhall listening on http://localhost:${PORT}`);
+      scheduleBackups();
+    });
+  })
+  .catch((err) => {
+    console.error('database init failed:', err);
+    process.exit(1);
+  });

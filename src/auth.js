@@ -11,10 +11,16 @@
 //      login session, never a standalone key. Killing the parent kills it.
 //      This is what makes "log out" actually mean "my agent is disconnected".
 import { randomBytes, scryptSync, timingSafeEqual, createHash } from 'node:crypto';
-import { db } from './db.js';
+import { pool, NOW_ISO } from './db.js';
 
 const SESSION_TTL_DAYS = 30;
 const SCRYPT_KEYLEN = 64;
+
+// --- query helpers ---------------------------------------------------------
+async function one(sql, params) {
+  const r = await pool.query(sql, params);
+  return r.rows[0];
+}
 
 // --- password hashing ------------------------------------------------------
 
@@ -54,12 +60,13 @@ function expiryISO(days) {
 
 // --- sessions --------------------------------------------------------------
 
-export function createSession(userId) {
+export async function createSession(userId) {
   const { raw, digest } = mintToken();
-  const { lastInsertRowid } = db
-    .prepare('INSERT INTO sessions (user_id, token_hash, expires_at) VALUES (?, ?, ?)')
-    .run(userId, digest, expiryISO(SESSION_TTL_DAYS));
-  return { token: raw, sessionId: Number(lastInsertRowid) };
+  const row = await one(
+    'INSERT INTO sessions (user_id, token_hash, expires_at) VALUES ($1, $2, $3) RETURNING id',
+    [userId, digest, expiryISO(SESSION_TTL_DAYS)],
+  );
+  return { token: raw, sessionId: Number(row.id) };
 }
 
 /**
@@ -67,20 +74,19 @@ export function createSession(userId) {
  * Returns null for unknown, revoked, or expired tokens — the caller cannot
  * distinguish these cases, which is deliberate.
  */
-export function resolveToken(raw) {
+export async function resolveToken(raw) {
   if (!raw) return null;
   const digest = digestToken(raw);
   const now = new Date().toISOString();
 
-  const session = db
-    .prepare(
-      `SELECT s.id AS session_id, s.user_id, s.expires_at, s.revoked_at
-         FROM sessions s WHERE s.token_hash = ?`,
-    )
-    .get(digest);
+  const session = await one(
+    `SELECT s.id AS session_id, s.user_id, s.expires_at, s.revoked_at
+       FROM sessions s WHERE s.token_hash = $1`,
+    [digest],
+  );
   if (session) {
     if (session.revoked_at || session.expires_at <= now) return null;
-    const user = db.prepare('SELECT * FROM users WHERE id = ?').get(session.user_id);
+    const user = await one('SELECT * FROM users WHERE id = $1', [session.user_id]);
     if (!user) return null;
     return { user, sessionId: session.session_id, kind: 'session', agentName: null, bridgeTokenId: null };
   }
@@ -88,18 +94,17 @@ export function resolveToken(raw) {
   // A bridge token is only valid while its parent session is valid. The join
   // enforces that in one query so a revoked session can never leave a usable
   // child token behind.
-  const bridge = db
-    .prepare(
-      `SELECT b.id AS bridge_id, b.agent_name, b.revoked_at AS bridge_revoked,
-              s.id AS session_id, s.user_id, s.expires_at, s.revoked_at AS session_revoked
-         FROM bridge_tokens b
-         JOIN sessions s ON s.id = b.session_id
-        WHERE b.token_hash = ?`,
-    )
-    .get(digest);
+  const bridge = await one(
+    `SELECT b.id AS bridge_id, b.agent_name, b.revoked_at AS bridge_revoked,
+            s.id AS session_id, s.user_id, s.expires_at, s.revoked_at AS session_revoked
+       FROM bridge_tokens b
+       JOIN sessions s ON s.id = b.session_id
+      WHERE b.token_hash = $1`,
+    [digest],
+  );
   if (!bridge) return null;
   if (bridge.bridge_revoked || bridge.session_revoked || bridge.expires_at <= now) return null;
-  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(bridge.user_id);
+  const user = await one('SELECT * FROM users WHERE id = $1', [bridge.user_id]);
   if (!user) return null;
   return {
     user,
@@ -112,33 +117,31 @@ export function resolveToken(raw) {
 
 // --- bridge tokens ---------------------------------------------------------
 
-export function createBridgeToken(sessionId, userId, agentName) {
+export async function createBridgeToken(sessionId, userId, agentName) {
   const { raw, digest } = mintToken();
-  const { lastInsertRowid } = db
-    .prepare(
-      'INSERT INTO bridge_tokens (session_id, user_id, agent_name, token_hash) VALUES (?, ?, ?, ?)',
-    )
-    .run(sessionId, userId, agentName, digest);
-  return { token: raw, bridgeTokenId: Number(lastInsertRowid) };
+  const row = await one(
+    'INSERT INTO bridge_tokens (session_id, user_id, agent_name, token_hash) VALUES ($1, $2, $3, $4) RETURNING id',
+    [sessionId, userId, agentName, digest],
+  );
+  return { token: raw, bridgeTokenId: Number(row.id) };
 }
 
-export function listBridgeTokens(sessionId) {
-  return db
-    .prepare(
-      `SELECT id, agent_name, created_at, revoked_at
-         FROM bridge_tokens WHERE session_id = ? ORDER BY id`,
-    )
-    .all(sessionId);
+export async function listBridgeTokens(sessionId) {
+  const r = await pool.query(
+    `SELECT id, agent_name, created_at, revoked_at
+       FROM bridge_tokens WHERE session_id = $1 ORDER BY id`,
+    [sessionId],
+  );
+  return r.rows;
 }
 
-export function revokeBridgeToken(sessionId, bridgeTokenId) {
-  const { changes } = db
-    .prepare(
-      `UPDATE bridge_tokens SET revoked_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
-        WHERE id = ? AND session_id = ? AND revoked_at IS NULL`,
-    )
-    .run(bridgeTokenId, sessionId);
-  return changes > 0;
+export async function revokeBridgeToken(sessionId, bridgeTokenId) {
+  const r = await pool.query(
+    `UPDATE bridge_tokens SET revoked_at = ${NOW_ISO}
+      WHERE id = $1 AND session_id = $2 AND revoked_at IS NULL`,
+    [bridgeTokenId, sessionId],
+  );
+  return r.rowCount > 0;
 }
 
 /**
@@ -147,41 +150,44 @@ export function revokeBridgeToken(sessionId, bridgeTokenId) {
  * Returns the ids of bridge tokens that were live, so the caller can close
  * their sockets — revoking a row does not by itself disconnect anyone.
  */
-export function revokeSession(sessionId) {
-  const live = db
-    .prepare('SELECT id FROM bridge_tokens WHERE session_id = ? AND revoked_at IS NULL')
-    .all(sessionId)
-    .map((r) => r.id);
-  db.exec('BEGIN');
+export async function revokeSession(sessionId) {
+  const client = await pool.connect();
   try {
-    db.prepare(
-      `UPDATE sessions SET revoked_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
-        WHERE id = ? AND revoked_at IS NULL`,
-    ).run(sessionId);
-    db.prepare(
-      `UPDATE bridge_tokens SET revoked_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
-        WHERE session_id = ? AND revoked_at IS NULL`,
-    ).run(sessionId);
-    db.exec('COMMIT');
+    await client.query('BEGIN');
+    const live = (await client.query(
+      'SELECT id FROM bridge_tokens WHERE session_id = $1 AND revoked_at IS NULL',
+      [sessionId],
+    )).rows.map((r) => r.id);
+    await client.query(
+      `UPDATE sessions SET revoked_at = ${NOW_ISO} WHERE id = $1 AND revoked_at IS NULL`,
+      [sessionId],
+    );
+    await client.query(
+      `UPDATE bridge_tokens SET revoked_at = ${NOW_ISO} WHERE session_id = $1 AND revoked_at IS NULL`,
+      [sessionId],
+    );
+    await client.query('COMMIT');
+    return { revokedBridgeTokenIds: live };
   } catch (err) {
-    db.exec('ROLLBACK');
+    await client.query('ROLLBACK');
     throw err;
+  } finally {
+    client.release();
   }
-  return { revokedBridgeTokenIds: live };
 }
 
 // --- users -----------------------------------------------------------------
 
-export function createUserWithPassword(username, password) {
+export async function createUserWithPassword(username, password) {
   const hash = hashPassword(password);
-  const { lastInsertRowid } = db
-    .prepare('INSERT INTO users (username, display_name, password_hash) VALUES (?, ?, ?)')
-    .run(username, username, hash);
-  return db.prepare('SELECT * FROM users WHERE id = ?').get(lastInsertRowid);
+  return one(
+    'INSERT INTO users (username, display_name, password_hash) VALUES ($1, $2, $3) RETURNING *',
+    [username, username, hash],
+  );
 }
 
-export function getUserByUsername(username) {
-  return db.prepare('SELECT * FROM users WHERE username = ?').get(username);
+export async function getUserByUsername(username) {
+  return one('SELECT * FROM users WHERE username = $1', [username]);
 }
 
 /** Strip secrets before a user row is ever serialized to a client. */

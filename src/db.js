@@ -1,288 +1,305 @@
-// SQLite storage via node:sqlite (built into Node >= 22.5) — zero native deps,
-// swappable for Postgres when we deploy to Render.
-import { DatabaseSync } from 'node:sqlite';
-import { mkdirSync } from 'node:fs';
-import path from 'node:path';
+// Postgres storage via node-postgres (pg). Async data-access layer.
+//
+// Migrated from node:sqlite. Two things worth knowing:
+//   * Timestamps stay TEXT in ISO-8601 millis-Z form (e.g. 2026-08-03T04:51:58.447Z),
+//     exactly as the old SQLite schema produced them. The API shape is unchanged
+//     and resolveToken()'s lexical `expires_at <= now` comparison keeps working.
+//   * BIGINT ids are parsed back into JS numbers (see setTypeParser below), so
+//     ids stay numbers everywhere the app already treats them as numbers.
+import pg from 'pg';
 
-const DATA_DIR = process.env.DATA_DIR || path.resolve('data');
-mkdirSync(DATA_DIR, { recursive: true });
+const { Pool, types } = pg;
 
-export const db = new DatabaseSync(path.join(DATA_DIR, 'buildhall.db'));
+// pg returns int8/BIGINT as strings by default (to avoid precision loss beyond
+// 2^53). Our ids are nowhere near that, and the app compares/serializes ids as
+// numbers, so parse OID 20 (int8) into a JS number to match SQLite's behaviour.
+types.setTypeParser(20, (v) => (v === null ? null : parseInt(v, 10)));
 
-db.exec(`
-  PRAGMA journal_mode = WAL;
-  PRAGMA foreign_keys = ON;
-
-  CREATE TABLE IF NOT EXISTS users (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    username    TEXT NOT NULL UNIQUE COLLATE NOCASE,
-    display_name TEXT NOT NULL,
-    created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
-  );
-
-  CREATE TABLE IF NOT EXISTS groups (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    slug        TEXT NOT NULL UNIQUE COLLATE NOCASE,
-    name        TEXT NOT NULL,
-    description TEXT NOT NULL DEFAULT '',
-    goal        TEXT NOT NULL DEFAULT '',
-    -- groups start private and opt IN to the public feed
-    visibility  TEXT NOT NULL DEFAULT 'private'
-                CHECK (visibility IN ('public','unlisted','private')),
-    created_by  INTEGER NOT NULL REFERENCES users(id),
-    created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
-  );
-
-  CREATE TABLE IF NOT EXISTS memberships (
-    group_id    INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
-    user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    role        TEXT NOT NULL DEFAULT 'member'
-                CHECK (role IN ('admin','member','viewer')),
-    joined_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-    PRIMARY KEY (group_id, user_id)
-  );
-
-  CREATE TABLE IF NOT EXISTS messages (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    group_id    INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
-    user_id     INTEGER NOT NULL REFERENCES users(id),
-    -- who actually authored this: the human at the keyboard, their agent
-    -- via the connector, or the system itself
-    actor_type  TEXT NOT NULL CHECK (actor_type IN ('human','ai','system')),
-    -- e.g. 'claude', 'codex' — only set when actor_type = 'ai'
-    agent_name  TEXT,
-    -- checkpoints are admin-posted summaries, pinned in the UI and shown
-    -- as the group's preview in the public feed
-    kind        TEXT NOT NULL DEFAULT 'message'
-                CHECK (kind IN ('message','checkpoint')),
-    -- a checkpoint may pin the specific message it marks; null for plain
-    -- checkpoints and for every non-checkpoint message
-    pinned_message_id INTEGER REFERENCES messages(id),
-    text        TEXT NOT NULL,
-    created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
-  );
-
-  CREATE INDEX IF NOT EXISTS idx_messages_group_time
-    ON messages (group_id, id);
-  CREATE INDEX IF NOT EXISTS idx_messages_checkpoints
-    ON messages (group_id, kind) WHERE kind = 'checkpoint';
-
-  -- Checkpoint 7 auth. A login session is the root credential; a bridge token
-  -- (what an agent/connector authenticates with) hangs off one via ON DELETE
-  -- CASCADE, so a session can never leave an orphaned child token behind.
-  -- Only SHA-256 digests are stored: the raw token exists once, in the
-  -- response that minted it.
-  CREATE TABLE IF NOT EXISTS sessions (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    token_hash  TEXT NOT NULL UNIQUE,
-    created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-    expires_at  TEXT NOT NULL,
-    revoked_at  TEXT
-  );
-
-  CREATE TABLE IF NOT EXISTS bridge_tokens (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    session_id  INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-    user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    agent_name  TEXT NOT NULL,
-    token_hash  TEXT NOT NULL UNIQUE,
-    created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-    revoked_at  TEXT
-  );
-
-  CREATE INDEX IF NOT EXISTS idx_bridge_tokens_session
-    ON bridge_tokens (session_id);
-`);
-
-// Migration for databases created before pinned_message_id existed: CREATE
-// TABLE IF NOT EXISTS won't touch them, so add the column in place.
-const messageColumns = db.prepare(`SELECT name FROM pragma_table_info('messages')`).all();
-if (!messageColumns.some((c) => c.name === 'pinned_message_id')) {
-  db.exec(`ALTER TABLE messages ADD COLUMN pinned_message_id INTEGER REFERENCES messages(id)`);
+// SSL: Render's internal database URL needs none; an external URL does. Default
+// to no SSL for localhost and relaxed SSL otherwise; DATABASE_SSL overrides.
+function sslConfig() {
+  const mode = process.env.DATABASE_SSL;
+  if (mode === 'disable') return false;
+  if (mode === 'require') return { rejectUnauthorized: false };
+  const url = process.env.DATABASE_URL || '';
+  if (/@(localhost|127\.0\.0\.1)/.test(url) || !url) return false;
+  return { rejectUnauthorized: false };
 }
 
-// Same in-place migration for auth: databases created under the pre-checkpoint-7
-// schema have no password_hash. It stays NULL for those rows, and a NULL hash
-// can never satisfy verifyPassword, so legacy accounts are inert rather than
-// silently loginable.
-const userColumns = db.prepare(`SELECT name FROM pragma_table_info('users')`).all();
-if (!userColumns.some((c) => c.name === 'password_hash')) {
-  db.exec(`ALTER TABLE users ADD COLUMN password_hash TEXT`);
+export const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: sslConfig(),
+  max: Number(process.env.PG_POOL_MAX || 10),
+});
+
+// Small query helpers. `one` returns the first row (or undefined); `many`
+// returns all rows; `run` returns the raw result (for rowCount).
+async function one(sql, params) {
+  const r = await pool.query(sql, params);
+  return r.rows[0];
 }
+async function many(sql, params) {
+  const r = await pool.query(sql, params);
+  return r.rows;
+}
+async function run(sql, params) {
+  return pool.query(sql, params);
+}
+
+// The Postgres expression that reproduces SQLite's strftime('%Y-%m-%dT%H:%M:%fZ')
+// UTC-millis-Z string, used for every created_at/joined_at default and every
+// revoked_at stamp so timestamps stay byte-identical to the old schema.
+const NOW_ISO = `to_char((now() at time zone 'utc'), 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')`;
+
+const SCHEMA = `
+CREATE EXTENSION IF NOT EXISTS citext;
+
+CREATE TABLE IF NOT EXISTS users (
+  id            BIGSERIAL PRIMARY KEY,
+  username      CITEXT NOT NULL UNIQUE,
+  display_name  TEXT NOT NULL,
+  password_hash TEXT,
+  created_at    TEXT NOT NULL DEFAULT ${NOW_ISO}
+);
+
+CREATE TABLE IF NOT EXISTS groups (
+  id          BIGSERIAL PRIMARY KEY,
+  slug        CITEXT NOT NULL UNIQUE,
+  name        TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  goal        TEXT NOT NULL DEFAULT '',
+  visibility  TEXT NOT NULL DEFAULT 'private'
+              CHECK (visibility IN ('public','unlisted','private')),
+  created_by  BIGINT NOT NULL REFERENCES users(id),
+  created_at  TEXT NOT NULL DEFAULT ${NOW_ISO}
+);
+
+CREATE TABLE IF NOT EXISTS memberships (
+  group_id  BIGINT NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+  user_id   BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  role      TEXT NOT NULL DEFAULT 'member'
+            CHECK (role IN ('admin','member','viewer')),
+  joined_at TEXT NOT NULL DEFAULT ${NOW_ISO},
+  PRIMARY KEY (group_id, user_id)
+);
+
+CREATE TABLE IF NOT EXISTS messages (
+  id                BIGSERIAL PRIMARY KEY,
+  group_id          BIGINT NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+  user_id           BIGINT NOT NULL REFERENCES users(id),
+  actor_type        TEXT NOT NULL CHECK (actor_type IN ('human','ai','system')),
+  agent_name        TEXT,
+  kind              TEXT NOT NULL DEFAULT 'message'
+                    CHECK (kind IN ('message','checkpoint')),
+  pinned_message_id BIGINT REFERENCES messages(id),
+  text              TEXT NOT NULL,
+  created_at        TEXT NOT NULL DEFAULT ${NOW_ISO}
+);
+CREATE INDEX IF NOT EXISTS idx_messages_group_time ON messages (group_id, id);
+CREATE INDEX IF NOT EXISTS idx_messages_checkpoints
+  ON messages (group_id, kind) WHERE kind = 'checkpoint';
+
+CREATE TABLE IF NOT EXISTS sessions (
+  id         BIGSERIAL PRIMARY KEY,
+  user_id    BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  token_hash TEXT NOT NULL UNIQUE,
+  created_at TEXT NOT NULL DEFAULT ${NOW_ISO},
+  expires_at TEXT NOT NULL,
+  revoked_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS bridge_tokens (
+  id         BIGSERIAL PRIMARY KEY,
+  session_id BIGINT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  user_id    BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  agent_name TEXT NOT NULL,
+  token_hash TEXT NOT NULL UNIQUE,
+  created_at TEXT NOT NULL DEFAULT ${NOW_ISO},
+  revoked_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_bridge_tokens_session ON bridge_tokens (session_id);
+`;
+
+// Create the schema. Idempotent; call once at boot before serving.
+export async function init() {
+  await pool.query(SCHEMA);
+}
+
+// Re-export the stamp expression so auth.js uses the identical timestamp form.
+export { NOW_ISO };
 
 // --- users ---------------------------------------------------------------
 
-export function findOrCreateUser(username) {
-  const existing = db
-    .prepare('SELECT * FROM users WHERE username = ?')
-    .get(username);
-  if (existing) return existing;
-  const { lastInsertRowid } = db
-    .prepare('INSERT INTO users (username, display_name) VALUES (?, ?)')
-    .run(username, username);
-  return db.prepare('SELECT * FROM users WHERE id = ?').get(lastInsertRowid);
+export async function findOrCreateUser(username) {
+  const created = await one(
+    `INSERT INTO users (username, display_name) VALUES ($1, $2)
+     ON CONFLICT (username) DO NOTHING RETURNING *`,
+    [username, username],
+  );
+  if (created) return created;
+  return one('SELECT * FROM users WHERE username = $1', [username]);
 }
 
-export function getUser(id) {
-  return db.prepare('SELECT * FROM users WHERE id = ?').get(id);
+export async function getUser(id) {
+  return one('SELECT * FROM users WHERE id = $1', [id]);
 }
 
 // --- groups --------------------------------------------------------------
 
-export function createGroup({ slug, name, description, goal, visibility, createdBy }) {
-  const { lastInsertRowid } = db
-    .prepare(
+export async function createGroup({ slug, name, description, goal, visibility, createdBy }) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const { rows } = await client.query(
       `INSERT INTO groups (slug, name, description, goal, visibility, created_by)
-       VALUES (?, ?, ?, ?, ?, ?)`
-    )
-    .run(slug, name, description ?? '', goal ?? '', visibility ?? 'private', createdBy);
-  // creator starts as admin
-  db.prepare(
-    `INSERT INTO memberships (group_id, user_id, role) VALUES (?, ?, 'admin')`
-  ).run(lastInsertRowid, createdBy);
-  return getGroupBySlug(slug);
+       VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+      [slug, name, description ?? '', goal ?? '', visibility ?? 'private', createdBy],
+    );
+    const group = rows[0];
+    // creator starts as admin
+    await client.query(
+      `INSERT INTO memberships (group_id, user_id, role) VALUES ($1, $2, 'admin')`,
+      [group.id, createdBy],
+    );
+    await client.query('COMMIT');
+    return group;
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
 }
 
-export function getGroupBySlug(slug) {
-  return db.prepare('SELECT * FROM groups WHERE slug = ?').get(slug);
+export async function getGroupBySlug(slug) {
+  return one('SELECT * FROM groups WHERE slug = $1', [slug]);
 }
 
-export function getGroupById(id) {
-  return db.prepare('SELECT * FROM groups WHERE id = ?').get(id);
+export async function getGroupById(id) {
+  return one('SELECT * FROM groups WHERE id = $1', [id]);
 }
 
-export function listGroupsForUser(userId) {
-  return db
-    .prepare(
-      `SELECT g.*, m.role FROM groups g
-       JOIN memberships m ON m.group_id = g.id
-       WHERE m.user_id = ?
-       ORDER BY g.created_at DESC`
-    )
-    .all(userId);
+export async function listGroupsForUser(userId) {
+  return many(
+    `SELECT g.*, m.role FROM groups g
+     JOIN memberships m ON m.group_id = g.id
+     WHERE m.user_id = $1
+     ORDER BY g.created_at DESC`,
+    [userId],
+  );
 }
 
-export function getMembership(groupId, userId) {
-  return db
-    .prepare('SELECT * FROM memberships WHERE group_id = ? AND user_id = ?')
-    .get(groupId, userId);
+export async function getMembership(groupId, userId) {
+  return one('SELECT * FROM memberships WHERE group_id = $1 AND user_id = $2', [groupId, userId]);
 }
 
-export function joinGroup(groupId, userId, role = 'member') {
-  db.prepare(
-    `INSERT OR IGNORE INTO memberships (group_id, user_id, role) VALUES (?, ?, ?)`
-  ).run(groupId, userId, role);
+export async function joinGroup(groupId, userId, role = 'member') {
+  await run(
+    `INSERT INTO memberships (group_id, user_id, role) VALUES ($1, $2, $3)
+     ON CONFLICT (group_id, user_id) DO NOTHING`,
+    [groupId, userId, role],
+  );
   return getMembership(groupId, userId);
 }
 
 // --- messages ------------------------------------------------------------
 
-export function addMessage({ groupId, userId, actorType, agentName, kind, pinnedMessageId, text }) {
-  const { lastInsertRowid } = db
-    .prepare(
-      `INSERT INTO messages (group_id, user_id, actor_type, agent_name, kind, pinned_message_id, text)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`
-    )
-    .run(groupId, userId, actorType, agentName ?? null, kind ?? 'message', pinnedMessageId ?? null, text);
-  return db
-    .prepare(
-      `SELECT m.*, u.username, u.display_name FROM messages m
-       JOIN users u ON u.id = m.user_id WHERE m.id = ?`
-    )
-    .get(lastInsertRowid);
+export async function addMessage({ groupId, userId, actorType, agentName, kind, pinnedMessageId, text }) {
+  // Insert and join the author in one round trip via a CTE.
+  return one(
+    `WITH ins AS (
+       INSERT INTO messages (group_id, user_id, actor_type, agent_name, kind, pinned_message_id, text)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       RETURNING *
+     )
+     SELECT ins.*, u.username, u.display_name FROM ins JOIN users u ON u.id = ins.user_id`,
+    [groupId, userId, actorType, agentName ?? null, kind ?? 'message', pinnedMessageId ?? null, text],
+  );
 }
 
-export function getMessageInGroup(groupId, messageId) {
-  return db
-    .prepare('SELECT * FROM messages WHERE id = ? AND group_id = ?')
-    .get(messageId, groupId);
+export async function getMessageInGroup(groupId, messageId) {
+  return one('SELECT * FROM messages WHERE id = $1 AND group_id = $2', [messageId, groupId]);
 }
 
 export const MESSAGES_PAGE_LIMIT = 200;
 
-export function listMessages(groupId, { afterId = 0, beforeId = 0, limit = MESSAGES_PAGE_LIMIT } = {}) {
+export async function listMessages(groupId, { afterId = 0, beforeId = 0, limit = MESSAGES_PAGE_LIMIT } = {}) {
   limit = Math.min(Math.max(1, limit), MESSAGES_PAGE_LIMIT);
   if (beforeId > 0) {
-    // backward page (loading older history): newest `limit` rows below beforeId,
-    // returned in ascending order like every other message response
-    return db
-      .prepare(
-        `SELECT * FROM (
-           SELECT m.*, u.username, u.display_name FROM messages m
-           JOIN users u ON u.id = m.user_id
-           WHERE m.group_id = ? AND m.id < ?
-           ORDER BY m.id DESC LIMIT ?
-         ) ORDER BY id ASC`
-      )
-      .all(groupId, beforeId, limit);
+    // backward page (older history): newest `limit` rows below beforeId, then
+    // flipped back to ascending like every other message response
+    return many(
+      `SELECT * FROM (
+         SELECT m.*, u.username, u.display_name FROM messages m
+         JOIN users u ON u.id = m.user_id
+         WHERE m.group_id = $1 AND m.id < $2
+         ORDER BY m.id DESC LIMIT $3
+       ) sub ORDER BY id ASC`,
+      [groupId, beforeId, limit],
+    );
   }
-  return db
-    .prepare(
-      `SELECT m.*, u.username, u.display_name FROM messages m
-       JOIN users u ON u.id = m.user_id
-       WHERE m.group_id = ? AND m.id > ?
-       ORDER BY m.id ASC LIMIT ?`
-    )
-    .all(groupId, afterId, limit);
+  return many(
+    `SELECT m.*, u.username, u.display_name FROM messages m
+     JOIN users u ON u.id = m.user_id
+     WHERE m.group_id = $1 AND m.id > $2
+     ORDER BY m.id ASC LIMIT $3`,
+    [groupId, afterId, limit],
+  );
 }
 
 // Newest `limit` messages in ascending order — the "last N" slice an agent
 // needs to catch up on a conversation without paging through history.
-export function lastMessages(groupId, limit = 50) {
+export async function lastMessages(groupId, limit = 50) {
   limit = Math.min(Math.max(1, limit), MESSAGES_PAGE_LIMIT);
-  return db
-    .prepare(
-      `SELECT * FROM (
-         SELECT m.*, u.username, u.display_name FROM messages m
-         JOIN users u ON u.id = m.user_id
-         WHERE m.group_id = ?
-         ORDER BY m.id DESC LIMIT ?
-       ) ORDER BY id ASC`
-    )
-    .all(groupId, limit);
+  return many(
+    `SELECT * FROM (
+       SELECT m.*, u.username, u.display_name FROM messages m
+       JOIN users u ON u.id = m.user_id
+       WHERE m.group_id = $1
+       ORDER BY m.id DESC LIMIT $2
+     ) sub ORDER BY id ASC`,
+    [groupId, limit],
+  );
 }
 
 // --- checkpoints ----------------------------------------------------------
 
-export function listCheckpoints(groupId, limit = 20) {
+export async function listCheckpoints(groupId, limit = 20) {
   limit = Math.min(Math.max(1, limit), 100);
-  return db
-    .prepare(
-      `SELECT m.*, u.username, u.display_name FROM messages m
-       JOIN users u ON u.id = m.user_id
-       WHERE m.group_id = ? AND m.kind = 'checkpoint'
-       ORDER BY m.id DESC LIMIT ?`
-    )
-    .all(groupId, limit);
+  return many(
+    `SELECT m.*, u.username, u.display_name FROM messages m
+     JOIN users u ON u.id = m.user_id
+     WHERE m.group_id = $1 AND m.kind = 'checkpoint'
+     ORDER BY m.id DESC LIMIT $2`,
+    [groupId, limit],
+  );
 }
 
-export function latestCheckpoint(groupId) {
-  return listCheckpoints(groupId, 1)[0] ?? null;
+export async function latestCheckpoint(groupId) {
+  return (await listCheckpoints(groupId, 1))[0] ?? null;
 }
 
 // --- public feed ---------------------------------------------------------
 
 // One card per public group: name, description, member/agent counts, and the
 // latest checkpoint (falling back to the latest message) as the preview.
-export function publicFeed(limit = 50) {
-  return db
-    .prepare(
-      `SELECT g.slug, g.name, g.description, g.goal, g.created_at,
-              (SELECT COUNT(*) FROM memberships m WHERE m.group_id = g.id) AS member_count,
-              (SELECT COUNT(*) FROM messages ms WHERE ms.group_id = g.id) AS message_count,
-              (SELECT text FROM messages ms
-                WHERE ms.group_id = g.id AND ms.kind = 'checkpoint'
-                ORDER BY ms.id DESC LIMIT 1) AS latest_checkpoint,
-              (SELECT text FROM messages ms
-                WHERE ms.group_id = g.id
-                ORDER BY ms.id DESC LIMIT 1) AS latest_message,
-              (SELECT MAX(created_at) FROM messages ms
-                WHERE ms.group_id = g.id) AS last_activity_at
-       FROM groups g
-       WHERE g.visibility = 'public'
-       ORDER BY last_activity_at DESC NULLS LAST
-       LIMIT ?`
-    )
-    .all(limit);
+export async function publicFeed(limit = 50) {
+  return many(
+    `SELECT g.slug, g.name, g.description, g.goal, g.created_at,
+            (SELECT COUNT(*) FROM memberships m WHERE m.group_id = g.id) AS member_count,
+            (SELECT COUNT(*) FROM messages ms WHERE ms.group_id = g.id) AS message_count,
+            (SELECT text FROM messages ms
+              WHERE ms.group_id = g.id AND ms.kind = 'checkpoint'
+              ORDER BY ms.id DESC LIMIT 1) AS latest_checkpoint,
+            (SELECT text FROM messages ms
+              WHERE ms.group_id = g.id
+              ORDER BY ms.id DESC LIMIT 1) AS latest_message,
+            (SELECT MAX(created_at) FROM messages ms
+              WHERE ms.group_id = g.id) AS last_activity_at
+     FROM groups g
+     WHERE g.visibility = 'public'
+     ORDER BY last_activity_at DESC NULLS LAST
+     LIMIT $1`,
+    [limit],
+  );
 }

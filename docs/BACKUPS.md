@@ -1,17 +1,21 @@
 # Database backups & restore
 
-BuildHall's database is a single SQLite file (`$DATA_DIR/buildhall.db`) on one
-Render persistent disk. This is the interim safety net until we migrate to
-Postgres: a nightly, off-Render, consistent copy so a disk fault, a bad deploy,
-or a corrupt write is recoverable.
+BuildHall's database is Postgres. Render Postgres provides managed daily backups
+and point-in-time recovery, but those live with the same vendor — so this ships
+an **independent** nightly snapshot to S3-compatible object storage as an off-
+Render, off-vendor copy. Defense in depth, not the only defense.
+
+> Storage was SQLite until the Postgres migration; this doc and `src/backup.js`
+> now describe the Postgres logical-snapshot format. Old `.db` (SQLite) backups
+> in the bucket remain readable with the pre-migration restore script.
 
 ## How it works
 
-- `src/backup.js` runs **in the web-service process** (a Render cron job can't
-  see `/var/data` — the disk isn't mounted for jobs).
-- Each run does `VACUUM INTO` — a transactionally **consistent** snapshot, never
-  a half-written page — then uploads it to S3-compatible object storage and
-  prunes to a rolling window (`BACKUP_KEEP`, default 14).
+- `src/backup.js` runs **in the web-service process**.
+- Each run reads every table inside one `REPEATABLE READ` transaction (a
+  point-in-time **consistent** view across tables), serializes it to JSON,
+  gzips it, uploads it to S3 as `buildhall-<timestamp>.json.gz`, and prunes to
+  a rolling window (`BACKUP_KEEP`, default 14).
 - Scheduled nightly at ~03:15 UTC. Inert (logs `[backup] disabled`) until the
   env vars below are set, so it's safe to deploy before the bucket exists.
 
@@ -76,23 +80,24 @@ From a machine with the same `BACKUP_S3_*` env vars:
 
 ```
 npm run restore                              # list available backups (newest first)
-npm run restore <key> -- --verify            # download + integrity_check + row counts
+npm run restore <key> -- --verify            # download, decompress, validate, row counts
+npm run restore <key> -- --restore           # load into DATABASE_URL (must be empty)
 ```
 
-`--verify` runs `PRAGMA integrity_check` and prints user/group/message counts so
-you confirm the file is valid **before** trusting it. The restored copy is
-written to `restored-buildhall.db` and never overwrites the live DB.
+`--verify` downloads and decompresses the snapshot, confirms every table is
+present, and prints per-table row counts so you confirm it's complete **before**
+trusting it. `--restore` loads it into the Postgres pointed to by `DATABASE_URL`
+and **refuses** to run if the target already has rows, so it can never clobber a
+live database. Restore preserves ids and advances sequences.
 
-To promote a verified restore:
-
-1. Stop / suspend the `buildhall` service (so nothing writes during the swap).
-2. Replace `$DATA_DIR/buildhall.db` with the restored file. Remove any stale
-   `buildhall.db-wal` / `buildhall.db-shm` sidecar files.
-3. Restart the service and hit `/health` (expect `200`, `db: ok`).
+For most incidents, prefer Render Postgres's own point-in-time recovery (finer
+granularity, no data-since-last-snapshot loss). Reach for these S3 snapshots when
+you need an independent copy — a full Render/account outage, or to clone the DB
+elsewhere.
 
 ## Known limitation
 
-`VACUUM INTO` is synchronous and briefly blocks the event loop while it runs —
-negligible for a small DB at 03:15 UTC, but a reason (among others) the real fix
-is the Postgres migration, which brings managed backups + point-in-time recovery
-and removes the single-instance ceiling.
+The snapshot is a logical JSON dump loaded row-by-row — fine at this scale, slow
+for a very large database. At that point, switch to `pg_dump`/`pg_restore` or
+lean entirely on Render's managed PITR. The nightly run reads inside one
+`REPEATABLE READ` transaction, so it never blocks writers.
