@@ -154,8 +154,11 @@ function probeKnownLocations(name) {
   if (process.platform !== 'win32') {
     roots.push('/usr/local/bin', path.join(homedir(), '.local', 'bin'), path.join(homedir(), '.npm-global', 'bin'));
   }
+  // On Windows, NEVER fall back to the bare extensionless name for codex: npm
+  // drops an extensionless bash shim there that Node's spawnSync cannot execute
+  // (ENOENT). Only runnable shims (.ps1/.cmd/.exe/.bat) are offered.
   const exts = process.platform === 'win32'
-    ? (name === 'codex' ? ['.ps1', '.cmd', '.exe', ''] : ['.cmd', '.exe', '.ps1', ''])
+    ? (name === 'codex' ? ['.ps1', '.cmd', '.exe', '.bat'] : ['.cmd', '.exe', '.ps1'])
     : [''];
   for (const root of roots) {
     for (const ext of exts) {
@@ -167,15 +170,24 @@ function probeKnownLocations(name) {
 }
 
 // Locate a command, covering the Windows-extension gaps `where` alone leaves.
+// On Windows, ask for the EXECUTABLE extensions first: `where codex` returns the
+// extensionless bash shim npm drops (which Windows cannot run -> ENOENT) before
+// the .cmd/.ps1 that actually work. codex prefers .ps1 (clean via powershell).
 function whereIs(name) {
   const finder = process.platform === 'win32' ? 'where' : 'which';
-  const candidates = process.platform === 'win32'
-    ? [name, `${name}.cmd`, `${name}.exe`, `${name}.bat`, `${name}.ps1`]
-    : [name];
+  const winOrder = name === 'codex'
+    ? [`${name}.ps1`, `${name}.cmd`, `${name}.exe`, `${name}.bat`, name]
+    : [`${name}.cmd`, `${name}.exe`, `${name}.bat`, `${name}.ps1`, name];
+  const candidates = process.platform === 'win32' ? winOrder : [name];
   for (const c of candidates) {
     try {
       const r = spawnSync(finder, [c], { encoding: 'utf8' });
-      const hit = (r.stdout || '').split(/\r?\n/).map((s) => s.trim()).find(Boolean);
+      const lines = (r.stdout || '').split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+      // On Windows only accept a hit that ends in a runnable extension: `where`
+      // lists the extensionless bash shim first, and spawnSync cannot run it.
+      const hit = process.platform === 'win32'
+        ? lines.find((line) => /\.(cmd|exe|bat|ps1)$/i.test(line))
+        : lines[0];
       if (r.status === 0 && hit) return hit;
     } catch { /* try next candidate */ }
   }
