@@ -98,6 +98,19 @@ app.post('/api/admin/backup', ah(async (req, res) => {
   return res.status(r.ok ? 200 : 500).json(r);
 }));
 
+// One-time cutover import: load the newest SQLite backup from S3 into Postgres,
+// run from inside the service (where Postgres is reachable). Guarded by the same
+// BACKUP_TRIGGER_TOKEN and refuses on a non-empty database, so it is safe to
+// leave deployed — inert without the token, no-op once data exists.
+app.post('/api/admin/import-sqlite', ah(async (req, res) => {
+  const secret = process.env.BACKUP_TRIGGER_TOKEN;
+  if (!secret) return res.status(404).json({ error: 'not found' });
+  if ((req.get('authorization') || '') !== `Bearer ${secret}`) return res.status(401).json({ error: 'unauthorized' });
+  const { importLatestSqliteBackup } = await import('./import-sqlite.js');
+  const r = await importLatestSqliteBackup();
+  return res.status(r.ok ? 200 : 500).json(r);
+}));
+
 app.use(express.static(path.join(__dirname, '..', 'public')));
 
 // Brand assets are served straight from brand/ (read-only originals from the
