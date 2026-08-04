@@ -54,13 +54,50 @@ const NOW_ISO = `to_char((now() at time zone 'utc'), 'YYYY-MM-DD"T"HH24:MI:SS.MS
 const SCHEMA = `
 CREATE EXTENSION IF NOT EXISTS citext;
 
+-- username is the PUBLIC HANDLE (shown in groups, drives agent names like
+-- "handle codex"). email is the private LOGIN identifier and is verified before
+-- an account is usable. password_hash is null for OAuth-only accounts.
 CREATE TABLE IF NOT EXISTS users (
-  id            BIGSERIAL PRIMARY KEY,
-  username      CITEXT NOT NULL UNIQUE,
-  display_name  TEXT NOT NULL,
-  password_hash TEXT,
-  created_at    TEXT NOT NULL DEFAULT ${NOW_ISO}
+  id             BIGSERIAL PRIMARY KEY,
+  username       CITEXT NOT NULL UNIQUE,
+  display_name   TEXT NOT NULL,
+  email          CITEXT,
+  email_verified BOOLEAN NOT NULL DEFAULT FALSE,
+  password_hash  TEXT,
+  created_at     TEXT NOT NULL DEFAULT ${NOW_ISO}
 );
+-- Additive migrations for databases created before email existed.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS email CITEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified BOOLEAN NOT NULL DEFAULT FALSE;
+-- One account per email (multiple NULLs allowed for legacy/handle-only rows).
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users (email) WHERE email IS NOT NULL;
+
+-- A linked third-party login (Google, GitHub). One row per provider account;
+-- a user may link several. The provider vouches for the email, so OAuth signups
+-- are verified on arrival.
+CREATE TABLE IF NOT EXISTS identities (
+  id               BIGSERIAL PRIMARY KEY,
+  user_id          BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  provider         TEXT NOT NULL CHECK (provider IN ('google','github')),
+  provider_user_id TEXT NOT NULL,
+  email            CITEXT,
+  created_at       TEXT NOT NULL DEFAULT ${NOW_ISO},
+  UNIQUE (provider, provider_user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_identities_user ON identities (user_id);
+
+-- Single-use, hashed, expiring tokens for email verification and password
+-- reset. Only the SHA-256 digest is stored, like sessions/bridge tokens.
+CREATE TABLE IF NOT EXISTS auth_tokens (
+  id         BIGSERIAL PRIMARY KEY,
+  user_id    BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  kind       TEXT NOT NULL CHECK (kind IN ('verify_email','reset_password')),
+  token_hash TEXT NOT NULL UNIQUE,
+  expires_at TEXT NOT NULL,
+  used_at    TEXT,
+  created_at TEXT NOT NULL DEFAULT ${NOW_ISO}
+);
+CREATE INDEX IF NOT EXISTS idx_auth_tokens_user_kind ON auth_tokens (user_id, kind);
 
 CREATE TABLE IF NOT EXISTS groups (
   id          BIGSERIAL PRIMARY KEY,
@@ -142,6 +179,53 @@ export async function findOrCreateUser(username) {
 
 export async function getUser(id) {
   return one('SELECT * FROM users WHERE id = $1', [id]);
+}
+
+export async function getUserByEmail(email) {
+  return one('SELECT * FROM users WHERE email = $1', [email]);
+}
+
+export async function getUserByUsername(username) {
+  return one('SELECT * FROM users WHERE username = $1', [username]);
+}
+
+// Create an account. password_hash may be null (OAuth-only). emailVerified is
+// true for OAuth signups (the provider vouches) and false for email signups
+// until the verification link is used.
+export async function createUser({ username, displayName, email, passwordHash = null, emailVerified = false }) {
+  return one(
+    `INSERT INTO users (username, display_name, email, password_hash, email_verified)
+     VALUES ($1, $2, $3, $4, $5) RETURNING *`,
+    [username, displayName ?? username, email ?? null, passwordHash, emailVerified],
+  );
+}
+
+export async function markEmailVerified(userId) {
+  await run('UPDATE users SET email_verified = TRUE WHERE id = $1', [userId]);
+}
+
+export async function updatePasswordHash(userId, passwordHash) {
+  await run('UPDATE users SET password_hash = $1 WHERE id = $2', [passwordHash, userId]);
+}
+
+// --- linked identities (OAuth) -------------------------------------------
+
+export async function findUserByIdentity(provider, providerUserId) {
+  return one(
+    `SELECT u.* FROM users u
+     JOIN identities i ON i.user_id = u.id
+     WHERE i.provider = $1 AND i.provider_user_id = $2`,
+    [provider, providerUserId],
+  );
+}
+
+export async function linkIdentity(userId, provider, providerUserId, email) {
+  return one(
+    `INSERT INTO identities (user_id, provider, provider_user_id, email)
+     VALUES ($1, $2, $3, $4)
+     ON CONFLICT (provider, provider_user_id) DO NOTHING RETURNING *`,
+    [userId, provider, providerUserId, email ?? null],
+  );
 }
 
 // --- groups --------------------------------------------------------------

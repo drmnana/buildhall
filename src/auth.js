@@ -176,6 +176,39 @@ export async function revokeSession(sessionId) {
   }
 }
 
+// --- verification / reset tokens -------------------------------------------
+// Same hashed-token discipline as sessions: the raw token is emailed once, only
+// its digest is stored. Single-use and expiring.
+
+export const VERIFY_TTL_MS = 24 * 60 * 60 * 1000; // 24h
+export const RESET_TTL_MS = 60 * 60 * 1000;       // 1h
+
+export async function createAuthToken(userId, kind, ttlMs) {
+  const { raw, digest } = mintToken();
+  const expires = new Date(Date.now() + ttlMs).toISOString();
+  await pool.query(
+    'INSERT INTO auth_tokens (user_id, kind, token_hash, expires_at) VALUES ($1, $2, $3, $4)',
+    [userId, kind, digest, expires],
+  );
+  return raw;
+}
+
+// Atomically consume a token: the single UPDATE ... RETURNING both checks
+// validity (right kind, unused, unexpired) and marks it used, so a token can
+// never be redeemed twice even under a race. Returns the user_id or null.
+export async function consumeAuthToken(raw, kind) {
+  if (!raw) return null;
+  const digest = digestToken(raw);
+  const now = new Date().toISOString();
+  const r = await pool.query(
+    `UPDATE auth_tokens SET used_at = ${NOW_ISO}
+      WHERE token_hash = $1 AND kind = $2 AND used_at IS NULL AND expires_at > $3
+      RETURNING user_id`,
+    [digest, kind, now],
+  );
+  return r.rows[0]?.user_id ?? null;
+}
+
 // --- users -----------------------------------------------------------------
 
 export async function createUserWithPassword(username, password) {
@@ -186,13 +219,9 @@ export async function createUserWithPassword(username, password) {
   );
 }
 
-export async function getUserByUsername(username) {
-  return one('SELECT * FROM users WHERE username = $1', [username]);
-}
-
 /** Strip secrets before a user row is ever serialized to a client. */
 export function publicUser(user) {
   if (!user) return null;
-  const { password_hash: _omit, ...safe } = user;
+  const { password_hash: _omit, email: _omit2, ...safe } = user;
   return safe;
 }

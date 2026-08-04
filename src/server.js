@@ -13,8 +13,11 @@ import { scheduleBackups, backupOnce, backupsConfigured } from './backup.js';
 import {
   createSession,
   createBridgeToken,
-  createUserWithPassword,
-  getUserByUsername,
+  hashPassword,
+  createAuthToken,
+  consumeAuthToken,
+  VERIFY_TTL_MS,
+  RESET_TTL_MS,
   listBridgeTokens,
   publicUser,
   resolveToken,
@@ -22,6 +25,8 @@ import {
   revokeSession,
   verifyPassword,
 } from './auth.js';
+import { sendVerificationEmail, sendPasswordResetEmail } from './email.js';
+import { providerConfigured, authorizeUrl, verifyState, exchangeCode } from './oauth.js';
 import {
   consumeFailure,
   createRateLimiter,
@@ -47,6 +52,14 @@ import {
   lastMessages,
   listCheckpoints,
   publicFeed,
+  getUser,
+  getUserByEmail,
+  getUserByUsername,
+  createUser,
+  markEmailVerified,
+  updatePasswordHash,
+  findUserByIdentity,
+  linkIdentity,
 } from './db.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -156,12 +169,13 @@ function bearerToken(req) {
   return /^bearer$/i.test(scheme || '') ? (value || '').trim() : null;
 }
 
-// Login is guarded twice: per username so one account cannot be ground down,
-// and per client address so an attacker cannot spray many usernames from one
-// host. Both count failures only. Registration counts every request, since the
-// cost there is account creation itself.
-const loginByUsername = createRateLimiter({
-  windowMs: LOGIN_WINDOW_MS, max: LOGIN_MAX_FAILURES, key: usernameKey('login-user'),
+// Login is guarded twice: per email so one account cannot be ground down, and
+// per client address so an attacker cannot spray many emails from one host.
+// Both count failures only. Registration counts every request, since the cost
+// there is account creation + an outbound email.
+const loginByEmail = createRateLimiter({
+  windowMs: LOGIN_WINDOW_MS, max: LOGIN_MAX_FAILURES,
+  key: (req) => `login-email:${String(req.body?.email || '').toLowerCase().trim()}`,
 });
 const loginByIp = createRateLimiter({
   windowMs: LOGIN_WINDOW_MS, max: LOGIN_IP_MAX_FAILURES, key: ipKey('login-ip'),
@@ -171,38 +185,165 @@ const registerByIp = createRateLimiter({
   countAllRequests: true,
 });
 
+const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+
+// A public handle (username) must exist for every account — it drives display
+// and agent naming. Derive a valid, unique one from a seed (name or email).
+async function uniqueHandle(seed) {
+  let base = String(seed || '').toLowerCase().replace(/[^a-z0-9_-]+/g, '').slice(0, 24);
+  if (base.length < 2) base = `user${base}`;
+  let handle = base;
+  for (let i = 0; i < 50; i++) {
+    if (!(await getUserByUsername(handle))) return handle;
+    handle = `${base}${Math.floor(Math.random() * 9000) + 1000}`.slice(0, 32);
+  }
+  return `${base}${Date.now().toString(36)}`.slice(0, 32);
+}
+
+// Resolve (or create) the local user for an OAuth profile. Order matters:
+// already-linked wins; otherwise link to an existing account by VERIFIED email
+// (never an unverified one — that would be account takeover); otherwise a new
+// account. Returns null if the provider gives us no email to key on.
+async function resolveOAuthUser(provider, profile) {
+  const existing = await findUserByIdentity(provider, profile.providerUserId);
+  if (existing) return existing;
+  if (profile.email && profile.emailVerified) {
+    const byEmail = await getUserByEmail(profile.email.toLowerCase());
+    if (byEmail) {
+      await linkIdentity(byEmail.id, provider, profile.providerUserId, profile.email);
+      if (!byEmail.email_verified) await markEmailVerified(byEmail.id);
+      return byEmail;
+    }
+  }
+  if (!profile.email) return null;
+  const handle = await uniqueHandle(profile.name || profile.email.split('@')[0]);
+  const user = await createUser({
+    username: handle,
+    displayName: profile.name || handle,
+    email: profile.email.toLowerCase(),
+    passwordHash: null,
+    emailVerified: !!profile.emailVerified,
+  });
+  await linkIdentity(user.id, provider, profile.providerUserId, profile.email);
+  return user;
+}
+
+// Register with email + password. The account is created UNVERIFIED and no
+// session is issued: the user must click the emailed link first. A handle may
+// be supplied, else one is derived from the email.
 app.post('/api/auth/register', registerByIp, ah(async (req, res) => {
-  const username = String(req.body?.username || '').trim();
+  const email = String(req.body?.email || '').trim().toLowerCase();
   const password = String(req.body?.password || '');
-  if (!USERNAME_RE.test(username)) {
-    return res.status(400).json({ error: 'username must be 2-32 chars: letters, digits, _ or -' });
+  let handle = String(req.body?.handle || req.body?.username || '').trim();
+  if (!EMAIL_RE.test(email) || email.length > 254) return res.status(400).json({ error: 'a valid email is required' });
+  if (password.length < MIN_PASSWORD_LENGTH) return res.status(400).json({ error: `password must be at least ${MIN_PASSWORD_LENGTH} characters` });
+  if (handle && !USERNAME_RE.test(handle)) return res.status(400).json({ error: 'handle must be 2-32 chars: letters, digits, _ or -' });
+  if (await getUserByEmail(email)) return res.status(409).json({ error: 'an account with this email already exists' });
+  if (handle) {
+    if (await getUserByUsername(handle)) return res.status(409).json({ error: 'handle already taken' });
+  } else {
+    handle = await uniqueHandle(email.split('@')[0]);
   }
-  if (password.length < MIN_PASSWORD_LENGTH) {
-    return res.status(400).json({ error: `password must be at least ${MIN_PASSWORD_LENGTH} characters` });
-  }
-  // Taken means taken, including legacy passwordless rows. Letting a caller
-  // set a password on an existing account would be account takeover.
-  if (await getUserByUsername(username)) return res.status(409).json({ error: 'username already taken' });
-  const user = await createUserWithPassword(username, password);
-  const { token } = await createSession(user.id);
-  res.status(201).json({ user: publicUser(user), token });
+  const user = await createUser({ username: handle, email, passwordHash: hashPassword(password), emailVerified: false });
+  const token = await createAuthToken(user.id, 'verify_email', VERIFY_TTL_MS);
+  await sendVerificationEmail(email, token);
+  res.status(201).json({ ok: true, pendingVerification: true, email, handle });
 }));
 
-app.post('/api/auth/login', loginByUsername, loginByIp, ah(async (req, res) => {
-  const username = String(req.body?.username || '').trim();
+// Complete verification (the SPA's /verify page calls this with the token from
+// the email link). On success the email is verified and a session is issued.
+app.get('/api/auth/verify', ah(async (req, res) => {
+  const userId = await consumeAuthToken(String(req.query.token || ''), 'verify_email');
+  if (!userId) return res.status(400).json({ error: 'invalid or expired verification link' });
+  await markEmailVerified(userId);
+  const user = await getUser(userId);
+  const { token } = await createSession(userId);
+  res.json({ ok: true, user: { ...publicUser(user), email: user.email }, token });
+}));
+
+app.post('/api/auth/resend-verification', registerByIp, ah(async (req, res) => {
+  const email = String(req.body?.email || '').trim().toLowerCase();
+  const user = await getUserByEmail(email);
+  if (user && !user.email_verified) {
+    const token = await createAuthToken(user.id, 'verify_email', VERIFY_TTL_MS);
+    await sendVerificationEmail(email, token);
+  }
+  res.json({ ok: true }); // always 200 — don't reveal whether the email exists
+}));
+
+app.post('/api/auth/login', loginByEmail, loginByIp, ah(async (req, res) => {
+  const email = String(req.body?.email || '').trim().toLowerCase();
   const password = String(req.body?.password || '');
-  const user = await getUserByUsername(username);
-  // One generic failure for unknown user, legacy NULL hash, and wrong
+  const user = await getUserByEmail(email);
+  // One generic failure for unknown email, OAuth-only (null hash), and wrong
   // password, so the response cannot be used to enumerate accounts.
   if (!user || !verifyPassword(password, user.password_hash)) {
     consumeFailure(req);
-    return res.status(401).json({ error: 'invalid username or password' });
+    return res.status(401).json({ error: 'invalid email or password' });
   }
-  // A correct password clears the counters, so a legitimate user is never
-  // locked out by their own earlier typos.
+  if (!user.email_verified) {
+    consumeFailure(req);
+    return res.status(403).json({ error: 'please verify your email first', needsVerification: true });
+  }
   resetOnSuccess(req);
   const { token } = await createSession(user.id);
-  res.json({ user: publicUser(user), token });
+  res.json({ user: { ...publicUser(user), email: user.email }, token });
+}));
+
+app.post('/api/auth/forgot', registerByIp, ah(async (req, res) => {
+  const email = String(req.body?.email || '').trim().toLowerCase();
+  const user = await getUserByEmail(email);
+  if (user && user.password_hash) { // only password accounts can reset a password
+    const token = await createAuthToken(user.id, 'reset_password', RESET_TTL_MS);
+    await sendPasswordResetEmail(email, token);
+  }
+  res.json({ ok: true }); // always 200 — don't reveal whether the email exists
+}));
+
+app.post('/api/auth/reset', ah(async (req, res) => {
+  const password = String(req.body?.password || '');
+  if (password.length < MIN_PASSWORD_LENGTH) return res.status(400).json({ error: `password must be at least ${MIN_PASSWORD_LENGTH} characters` });
+  const userId = await consumeAuthToken(String(req.body?.token || ''), 'reset_password');
+  if (!userId) return res.status(400).json({ error: 'invalid or expired reset link' });
+  await updatePasswordHash(userId, hashPassword(password));
+  await markEmailVerified(userId); // proving control of the inbox verifies it too
+  const user = await getUser(userId);
+  const { token } = await createSession(userId);
+  res.json({ ok: true, user: { ...publicUser(user), email: user.email }, token });
+}));
+
+// --- social login (Google, GitHub) ----------------------------------------
+// GET /api/auth/:provider redirects to the provider; the callback exchanges the
+// code, resolves the user, and hands the session token to the SPA via the URL
+// fragment (never a query param — fragments don't reach server/proxy logs).
+// The `next()` guards make these safe to register alongside the specific
+// /api/auth/* routes: a non-oauth path just falls through.
+app.get('/api/auth/:provider', ah(async (req, res, next) => {
+  const provider = req.params.provider;
+  if (provider !== 'google' && provider !== 'github') return next();
+  if (!providerConfigured(provider)) return res.status(404).json({ error: `${provider} login is not configured` });
+  res.redirect(authorizeUrl(provider));
+}));
+
+app.get('/api/auth/:provider/callback', ah(async (req, res, next) => {
+  const provider = req.params.provider;
+  if (provider !== 'google' && provider !== 'github') return next();
+  if (!providerConfigured(provider)) return res.status(404).json({ error: 'not configured' });
+  if (req.query.error) return res.redirect(`/?auth_error=${encodeURIComponent(String(req.query.error))}`);
+  const code = String(req.query.code || '');
+  if (!code || !verifyState(provider, String(req.query.state || ''))) {
+    return res.redirect('/?auth_error=invalid_state');
+  }
+  let profile;
+  try {
+    profile = await exchangeCode(provider, code);
+  } catch {
+    return res.redirect('/?auth_error=exchange_failed');
+  }
+  const user = await resolveOAuthUser(provider, profile);
+  if (!user) return res.redirect('/?auth_error=no_email');
+  const { token } = await createSession(user.id);
+  res.redirect(`/#token=${encodeURIComponent(token)}`);
 }));
 
 const requireUser = ah(async (req, res, next) => {
@@ -223,7 +364,7 @@ function requireSessionToken(req, res, next) {
 
 app.get('/api/auth/me', requireUser, (req, res) => {
   res.json({
-    user: publicUser(req.user),
+    user: { ...publicUser(req.user), email: req.user.email, emailVerified: req.user.email_verified },
     tokenKind: req.identity.kind,
     agentName: req.identity.agentName,
   });
