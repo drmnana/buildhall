@@ -40,6 +40,13 @@ const api = async (path, options = {}) => {
 const authDialog = $('#auth');
 let authMode = 'login';
 
+// Show exactly one view inside the auth dialog.
+function authView(which) {
+  for (const v of ['main', 'sent', 'reset', 'verify']) $('#auth-' + v).hidden = (v !== which);
+}
+
+function acceptToken(t) { token = t; localStorage.setItem(TOKEN_KEY, t); }
+
 $('#auth-switch').addEventListener('click', () => {
   authMode = authMode === 'login' ? 'register' : 'login';
   const registering = authMode === 'register';
@@ -49,6 +56,8 @@ $('#auth-switch').addEventListener('click', () => {
     : 'Log in to enter the hall.';
   $('#auth-switch-text').textContent = registering ? 'Already have an account?' : 'New here?';
   $('#auth-switch').textContent = registering ? 'Log in' : 'Create an account';
+  $('#auth-handle').hidden = !registering;
+  $('#auth-forgot-row').hidden = registering;
   $('#auth-form').password.autocomplete = registering ? 'new-password' : 'current-password';
   hideAuthError();
 });
@@ -60,26 +69,63 @@ function showAuthError(msg) {
 }
 function hideAuthError() { $('#auth-error').hidden = true; }
 
+// Social buttons: full-page redirect to the provider.
+for (const btn of document.querySelectorAll('.oauth')) {
+  btn.addEventListener('click', () => { window.location.href = `/api/auth/${btn.dataset.provider}`; });
+}
+
+async function postJson(path, body) {
+  const res = await fetch(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  return { res, body: await res.json().catch(() => ({})) };
+}
+
 $('#auth-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   hideAuthError();
-  const { username, password } = Object.fromEntries(new FormData(e.target));
+  const { email, password, handle } = Object.fromEntries(new FormData(e.target));
+  const payload = authMode === 'register' ? { email, password, handle: handle || undefined } : { email, password };
   try {
-    const res = await fetch(`/api/auth/${authMode}`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ username, password }),
-    });
-    const body = await res.json().catch(() => ({}));
+    const { res, body } = await postJson(`/api/auth/${authMode}`, payload);
+    if (res.status === 403 && body.needsVerification) {
+      await postJson('/api/auth/resend-verification', { email });
+      $('#auth-sent-msg').textContent = `That email isn't verified yet — we've re-sent the link to ${email}.`;
+      return authView('sent');
+    }
     if (!res.ok) return showAuthError(body.error || 'Something went wrong');
-    token = body.token;
-    localStorage.setItem(TOKEN_KEY, token);
+    if (body.pendingVerification) {
+      $('#auth-sent-msg').textContent = `We sent a verification link to ${email}. Click it to finish signing up.`;
+      return authView('sent');
+    }
+    acceptToken(body.token);
     authDialog.close();
     e.target.reset();
     boot();
   } catch (err) {
     showAuthError(err.message);
   }
+});
+
+$('#auth-forgot').addEventListener('click', async () => {
+  const email = $('#auth-form').email.value.trim();
+  if (!email) return showAuthError('Enter your email above, then click Forgot password.');
+  await postJson('/api/auth/forgot', { email });
+  $('#auth-sent-msg').textContent = `If an account exists for ${email}, a reset link is on its way.`;
+  authView('sent');
+});
+
+$('#auth-sent-back').addEventListener('click', () => authView('main'));
+$('#auth-verify-back').addEventListener('click', () => { history.replaceState({}, '', '/'); authView('main'); });
+
+$('#reset-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const params = new URLSearchParams(location.search);
+  const { res, body } = await postJson('/api/auth/reset', { token: params.get('token'), password: e.target.password.value });
+  const err = $('#reset-error');
+  if (!res.ok) { err.textContent = body.error || 'Reset failed'; err.hidden = false; return; }
+  acceptToken(body.token);
+  history.replaceState({}, '', '/');
+  authDialog.close();
+  boot();
 });
 
 $('#logout-btn').addEventListener('click', async () => {
@@ -467,5 +513,47 @@ $('#copy-cmd')?.addEventListener('click', async () => {
   }
 });
 
-if (token) boot();
-else authDialog.showModal();
+function oauthErrorText(code) {
+  return ({
+    invalid_state: 'Your sign-in link expired — please try again.',
+    exchange_failed: 'Could not complete sign-in. Please try again.',
+    no_email: 'That provider did not share an email, which we need to create your account.',
+  })[code] || 'Sign-in failed. Please try again.';
+}
+
+// Decide what to show on load: an OAuth return, an email link (/verify, /reset),
+// an OAuth error, an existing session, or the login screen.
+async function initAuth() {
+  const frag = new URLSearchParams(location.hash.slice(1));
+  if (frag.get('token')) { // returned from a social login
+    acceptToken(frag.get('token'));
+    history.replaceState({}, '', '/');
+    return boot();
+  }
+  const params = new URLSearchParams(location.search);
+  if (params.get('auth_error')) {
+    authDialog.showModal(); authView('main');
+    showAuthError(oauthErrorText(params.get('auth_error')));
+    history.replaceState({}, '', '/');
+    return;
+  }
+  if (location.pathname === '/verify') {
+    authDialog.showModal(); authView('verify');
+    const res = await fetch('/api/auth/verify?token=' + encodeURIComponent(params.get('token') || ''));
+    const body = await res.json().catch(() => ({}));
+    if (res.ok) {
+      acceptToken(body.token);
+      history.replaceState({}, '', '/');
+      authDialog.close();
+      return boot();
+    }
+    $('#auth-verify-h').textContent = 'Verification failed';
+    $('#auth-verify-msg').textContent = body.error || 'This link is invalid or expired.';
+    $('#auth-verify-back').hidden = false;
+    return;
+  }
+  if (location.pathname === '/reset') { authDialog.showModal(); authView('reset'); return; }
+  if (token) return boot();
+  authDialog.showModal(); authView('main');
+}
+initAuth();

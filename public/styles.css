@@ -232,6 +232,20 @@ input:focus, select:focus, textarea:focus {
   font-size: 0.85rem; border-radius: 8px; padding: 0.45rem 0.6rem; margin: 0;
 }
 .switch { text-align: center; font-size: 0.86rem; color: var(--bh-slate-500); margin: 0.2rem 0 0; }
+.auth-h { text-align: center; font-size: 1.15rem; color: var(--bh-navy-900); margin: 0.2rem 0 0.6rem; }
+.oauth-row { display: flex; flex-direction: column; gap: 0.5rem; margin-bottom: 0.2rem; }
+.btn.oauth {
+  display: flex; align-items: center; justify-content: center; gap: 0.5rem;
+  width: 100%; font-weight: 600; padding: 0.6rem;
+}
+.oauth-ic { display: inline-flex; align-items: center; }
+.auth-divider {
+  display: flex; align-items: center; text-align: center; gap: 0.6rem;
+  color: var(--bh-slate-500); font-size: 0.8rem; margin: 0.7rem 0;
+}
+.auth-divider::before, .auth-divider::after {
+  content: ""; flex: 1; height: 1px; background: var(--bh-slate-200, #e5e7eb);
+}
 
 /* --- responsive ----------------------------------------------------------- */
 

@@ -111,6 +111,12 @@ app.post('/api/admin/backup', ah(async (req, res) => {
   return res.status(r.ok ? 200 : 500).json(r);
 }));
 
+// Email-link landing pages are handled by the SPA (app.js reads the token from
+// the URL). Serve index.html for them so a fresh navigation doesn't 404.
+for (const p of ['/verify', '/reset']) {
+  app.get(p, (_req, res) => res.sendFile(path.join(__dirname, '..', 'public', 'index.html')));
+}
+
 app.use(express.static(path.join(__dirname, '..', 'public')));
 
 // Brand assets are served straight from brand/ (read-only originals from the
