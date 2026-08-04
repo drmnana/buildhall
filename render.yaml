@@ -1,42 +1,40 @@
 # Render Blueprint — Buildhall sync server
 # Docs: https://render.com/docs/blueprint-spec
 #
-# NOTE ON PLAN: `starter` is deliberate, not a default. Persistent disks are not
-# available on the free tier, and a free instance also spins down when idle and
-# loses its filesystem on every deploy — which would wipe the SQLite database
-# each time. Do not change this to `free` without first moving off node:sqlite.
+# STORAGE: Postgres (Render managed). The web service connects via DATABASE_URL,
+# set in the Render dashboard (Environment) — not here, since it is a secret. The
+# database itself was provisioned outside this blueprint, so it is intentionally
+# NOT declared under `databases:` (declaring it here could make a blueprint sync
+# try to create a second instance). See docs/POSTGRES-CUTOVER.md for the history.
 #
-# NOTE ON SECRETS: nothing secret belongs in this file. Any future admin
-# credential or API key should be added in the Render dashboard under
-# Environment (or declared here with `sync: false`, which commits the key name
-# but never the value).
+# NOTE ON PLAN: `starter` is deliberate. The service no longer needs a persistent
+# disk (that was for the old SQLite database); it is kept on a paid tier for
+# always-on behaviour (the free tier spins down when idle).
+#
+# NOTE ON SECRETS: nothing secret belongs in this file. Admin credentials / API
+# keys live in the Render dashboard under Environment (or here with `sync: false`,
+# which commits the key name but never the value). DATABASE_URL and every
+# BACKUP_S3_* value are set there.
 
 services:
   - type: web
     name: buildhall
     runtime: node
-    plan: starter          # paid tier — required for the persistent disk below
-    region: oregon         # change if you want a different region; disks are region-bound
+    plan: starter
+    region: oregon         # must match the Postgres region for internal connectivity
     branch: main
     autoDeploy: true
 
     buildCommand: npm install
     startCommand: npm start
 
-    # Render polls this to decide when a deploy goes live and whether to
-    # restart the instance. Returns 200 when SQLite is reachable, 503 if not.
+    # Render polls this to gate deploys and restart unhealthy instances. Returns
+    # 200 when Postgres is reachable (SELECT 1), 503 if not.
     healthCheckPath: /health
 
     envVars:
-      # node:sqlite requires Node >= 22.5. "22" tracks the latest 22.x release
-      # so security patches land without a manual bump.
+      # node:sqlite (used only by offline migration/import scripts) and the pg
+      # driver both want a current Node; "22" tracks the latest 22.x.
       - key: NODE_VERSION
         value: "22"
-      # SQLite lives on the persistent disk, NOT in the ephemeral build dir.
-      - key: DATA_DIR
-        value: /var/data
-
-    disk:
-      name: buildhall-data
-      mountPath: /var/data
-      sizeGB: 1
+      # DATABASE_URL and BACKUP_S3_* are set in the dashboard (secrets).
