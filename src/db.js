@@ -155,6 +155,23 @@ CREATE TABLE IF NOT EXISTS bridge_tokens (
   revoked_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_bridge_tokens_session ON bridge_tokens (session_id);
+
+-- Device pairing (bridge <-> account), device-code style. The bridge starts a
+-- pairing and polls with a secret; the user approves from a logged-in browser.
+-- session_token briefly holds the RAW session token between approve and claim
+-- (single use, minutes-long lifetime, deleted on claim) — the one deliberate
+-- exception to the hashed-only rule, because the bridge must receive it.
+CREATE TABLE IF NOT EXISTS pairings (
+  id            BIGSERIAL PRIMARY KEY,
+  code          TEXT NOT NULL UNIQUE,
+  secret_hash   TEXT NOT NULL,
+  agents        TEXT NOT NULL DEFAULT '[]',
+  session_token TEXT,
+  username      TEXT,
+  created_at    TEXT NOT NULL DEFAULT ${NOW_ISO},
+  expires_at    TEXT NOT NULL,
+  claimed_at    TEXT
+);
 `;
 
 // Create the schema. Idempotent; call once at boot before serving.

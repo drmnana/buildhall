@@ -37,6 +37,7 @@ const KNOWN_AGENTS = [
 const connections = new Map();
 /** @type {{url:string,username:string,session:string}|null} */
 let account = null;
+let pendingPair = null; // in-flight device pairing, never persisted
 /** @type {Record<string,string>} user-set command overrides, keyed by agent name */
 let agentCommands = {};
 
@@ -283,6 +284,44 @@ async function handle(req, res) {
   if (m === 'GET' && p === '/api/account') {
     return ok(res, { account: account ? { url: account.url, username: account.username } : null });
   }
+  // One-click pairing: start a device pairing on the server, hand the browser
+  // URL back to the panel, then poll until the user approves. On success the
+  // bridge holds its own session, and the existing per-agent Connect flow
+  // (join group, mint token, wire file + wake) works exactly as before.
+  if (m === 'POST' && p === '/api/pair/begin') {
+    const { url: serverUrl } = await readBody(req);
+    const base = String(serverUrl || DEFAULT_URL).trim().replace(/\/$/, '');
+    const agents = KNOWN_AGENTS.filter((a) => detectAgent(a.name).command).map((a) => a.name);
+    try {
+      const r = await fetch(`${base}/api/pair/start`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ agents }),
+      });
+      const j = await r.json().catch(() => null);
+      if (!r.ok || !j?.code) return fail(res, 502, j?.error || `could not reach ${base}`);
+      pendingPair = { base, code: j.code, secret: j.secret, startedAt: Date.now() };
+      return ok(res, { pairUrl: `${base}/pair?code=${encodeURIComponent(j.code)}` });
+    } catch { return fail(res, 502, `could not reach ${base}`); }
+  }
+  if (m === 'GET' && p === '/api/pair/status') {
+    if (!pendingPair) return ok(res, { state: account ? 'done' : 'idle', account: account && { url: account.url, username: account.username } });
+    try {
+      const r = await fetch(`${pendingPair.base}/api/pair/claim`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ code: pendingPair.code, secret: pendingPair.secret }),
+      });
+      const j = await r.json().catch(() => null);
+      if (r.status === 410) { pendingPair = null; return ok(res, { state: 'expired' }); }
+      if (r.ok && j?.token) {
+        account = { url: pendingPair.base, username: j.username, session: j.token };
+        pendingPair = null;
+        saveConfig();
+        return ok(res, { state: 'done', account: { url: account.url, username: account.username } });
+      }
+      return ok(res, { state: 'waiting' });
+    } catch { return ok(res, { state: 'waiting' }); }
+  }
+
   if (m === 'POST' && p === '/api/account/login') {
     const { url: serverUrl, username, password } = await readBody(req);
     const base = String(serverUrl || DEFAULT_URL).trim().replace(/\/$/, '');

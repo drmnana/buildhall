@@ -18,20 +18,17 @@
   </header>
 
   <main>
-    <!-- STEP 1: sign in -->
+    <!-- STEP 1: connect account (device pairing — no passwords here) -->
     <section class="card" id="signin-card">
       <h1>Welcome</h1>
-      <p>Sign in with your BuildHall account and this app connects the AIs on this
-         computer to your groups. No account yet?
+      <p>Connect this computer to your BuildHall account. A browser tab will open —
+         log in there if needed and click <b>Approve</b>. No account yet?
          <a href="https://buildhall.ai" target="_blank">Create one at buildhall.ai</a> first.</p>
-      <form id="signin" class="grid">
-        <label>Username <input name="username" required autocomplete="username"></label>
-        <label>Password <input name="password" type="password" required autocomplete="current-password"></label>
-        <div class="wide">
-          <button class="btn primary" type="submit">Sign in</button>
-          <span id="signin-err" class="err" hidden></span>
-        </div>
-      </form>
+      <div class="wide">
+        <button class="btn primary" id="connect-account" type="button">Connect your BuildHall account</button>
+        <span id="signin-status" class="muted" hidden></span>
+        <span id="signin-err" class="err" hidden></span>
+      </div>
     </section>
 
     <!-- STEP 2: your AIs -->

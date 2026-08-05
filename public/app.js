@@ -42,7 +42,7 @@ let authMode = 'login';
 
 // Show exactly one view inside the auth dialog.
 function authView(which) {
-  for (const v of ['main', 'sent', 'reset', 'verify']) $('#auth-' + v).hidden = (v !== which);
+  for (const v of ['main', 'sent', 'reset', 'verify', 'pair']) $('#auth-' + v).hidden = (v !== which);
 }
 
 function acceptToken(t) { token = t; localStorage.setItem(TOKEN_KEY, t); }
@@ -481,6 +481,52 @@ async function boot() {
   showFeed();
   await loadGroups();
   await Promise.all([loadFeed(), loadBridgeTokens()]);
+  // A pairing that was waiting on login (OAuth redirects drop the /pair URL,
+  // so the code survives in localStorage) resumes now.
+  const pending = localStorage.getItem(PAIR_KEY);
+  if (pending) showPairApproval(pending);
+}
+
+// --- bridge pairing (/pair?code=...) ---------------------------------------
+// The bridge on the user's computer opened this page. Approving mints a fresh
+// session for the bridge; the bridge picks it up by polling. The code rides in
+// localStorage across the login flow because OAuth returns land on "/".
+const PAIR_KEY = 'bh-pair-code';
+
+async function showPairApproval(code) {
+  if (!authDialog.open) authDialog.showModal();
+  authView('pair');
+  const msg = $('#auth-pair-msg'); const err = $('#auth-pair-error');
+  const btn = $('#auth-pair-approve');
+  err.hidden = true; btn.hidden = true;
+  try {
+    const info = await api(`/pair/${encodeURIComponent(code)}`);
+    if (!info) return; // 401 path already handled
+    if (info.approved) {
+      localStorage.removeItem(PAIR_KEY);
+      msg.textContent = 'Already approved — go back to the BuildHall Bridge window on your computer.';
+      return;
+    }
+    const agents = info.agents.length ? info.agents.join(' and ') : 'your local AIs';
+    msg.textContent = `The BuildHall Bridge on your computer wants to connect ${agents} to your account as “${me.username}”. Approve only if you just clicked Connect in the bridge.`;
+    btn.hidden = false;
+    btn.onclick = async () => {
+      btn.disabled = true;
+      try {
+        await api(`/pair/${encodeURIComponent(code)}/approve`, { method: 'POST' });
+        localStorage.removeItem(PAIR_KEY);
+        $('#auth-pair-h').textContent = 'Connected';
+        msg.textContent = 'All set — go back to the BuildHall Bridge window on your computer. You can close this tab.';
+        btn.hidden = true;
+      } catch (e) {
+        err.textContent = e.message; err.hidden = false; btn.disabled = false;
+      }
+    };
+  } catch (e) {
+    localStorage.removeItem(PAIR_KEY);
+    msg.textContent = '';
+    err.textContent = e.message; err.hidden = false;
+  }
 }
 
 // Show the right install method for the visitor's OS: a download for Windows,
@@ -553,6 +599,14 @@ async function initAuth() {
     return;
   }
   if (location.pathname === '/reset') { authDialog.showModal(); authView('reset'); return; }
+  if (location.pathname === '/pair') {
+    const code = params.get('code') || '';
+    history.replaceState({}, '', '/');
+    if (code) localStorage.setItem(PAIR_KEY, code);
+    if (token) return boot();          // boot() resumes the pairing
+    authDialog.showModal(); authView('main');
+    return;
+  }
   if (token) return boot();
   authDialog.showModal(); authView('main');
 }

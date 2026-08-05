@@ -3,6 +3,7 @@
 // the data-access layer. Auth is session-bound (checkpoint 7): identity comes
 // only from a server-minted token, never from anything the client asserts.
 import express from 'express';
+import { randomBytes } from 'node:crypto';
 import { createServer } from 'node:http';
 import { WebSocketServer, WebSocket } from 'ws';
 import fs from 'node:fs';
@@ -13,6 +14,7 @@ import { scheduleBackups, backupOnce, backupsConfigured } from './backup.js';
 import {
   createSession,
   createBridgeToken,
+  digestToken,
   hashPassword,
   createAuthToken,
   consumeAuthToken,
@@ -113,7 +115,7 @@ app.post('/api/admin/backup', ah(async (req, res) => {
 
 // Email-link landing pages are handled by the SPA (app.js reads the token from
 // the URL). Serve index.html for them so a fresh navigation doesn't 404.
-for (const p of ['/verify', '/reset']) {
+for (const p of ['/verify', '/reset', '/pair']) {
   app.get(p, (_req, res) => res.sendFile(path.join(__dirname, '..', 'public', 'index.html')));
 }
 
@@ -412,6 +414,79 @@ app.delete('/api/auth/bridge-tokens/:id', requireUser, requireSessionToken, ah(a
     return res.status(404).json({ error: 'no such live bridge token on this session' });
   }
   res.json({ ok: true, closedConnections: closeSocketsForBridgeToken(id) });
+}));
+
+// --- device pairing --------------------------------------------------------
+// One-click bridge setup, device-code style (think "pair your TV app"):
+//   1. bridge POSTs /api/pair/start (no auth)  -> { code, secret }
+//   2. bridge opens https://buildhall.ai/pair?code=... in the user's browser
+//   3. the logged-in user clicks Approve       -> a NEW session is minted and
+//      parked (raw) on the pairing row
+//   4. bridge polls /api/pair/claim with its secret -> receives the session
+//      token exactly once; the row is wiped
+// The secret stops a third party who saw the code (it's in a URL) from
+// claiming the session; only the device that started the pairing can.
+const PAIR_TTL_MS = 10 * 60 * 1000;
+
+function pairCode() {
+  // 8 chars, unambiguous alphabet (no 0/O/1/I) — short enough to read out.
+  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  return Array.from(randomBytes(8), (b) => alphabet[b % alphabet.length]).join('');
+}
+
+app.post('/api/pair/start', ah(async (req, res) => {
+  // Housekeeping: expired rows are dead weight; clear them on the write path.
+  await pool.query("DELETE FROM pairings WHERE expires_at <= $1", [new Date().toISOString()]);
+  const agents = Array.isArray(req.body?.agents)
+    ? req.body.agents.map((a) => String(a).slice(0, 32)).slice(0, 8)
+    : [];
+  const code = pairCode();
+  const secret = randomBytes(32).toString('base64url');
+  await pool.query(
+    'INSERT INTO pairings (code, secret_hash, agents, expires_at) VALUES ($1, $2, $3, $4)',
+    [code, digestToken(secret), JSON.stringify(agents), new Date(Date.now() + PAIR_TTL_MS).toISOString()],
+  );
+  res.status(201).json({ code, secret, expiresInSeconds: PAIR_TTL_MS / 1000 });
+}));
+
+// What the approval page shows. Requires a login so the page can also prove
+// the user is signed in before offering the Approve button.
+app.get('/api/pair/:code', requireUser, requireSessionToken, ah(async (req, res) => {
+  const r = await pool.query('SELECT agents, expires_at, session_token, claimed_at FROM pairings WHERE code = $1', [String(req.params.code)]);
+  const row = r.rows[0];
+  if (!row || row.expires_at <= new Date().toISOString()) return res.status(404).json({ error: 'pairing expired or unknown — start again from the bridge' });
+  res.json({
+    agents: JSON.parse(row.agents || '[]'),
+    approved: !!row.session_token || !!row.claimed_at,
+    expiresAt: row.expires_at,
+  });
+}));
+
+app.post('/api/pair/:code/approve', requireUser, requireSessionToken, ah(async (req, res) => {
+  const code = String(req.params.code);
+  const r = await pool.query('SELECT id, expires_at, session_token, claimed_at FROM pairings WHERE code = $1', [code]);
+  const row = r.rows[0];
+  if (!row || row.expires_at <= new Date().toISOString()) return res.status(404).json({ error: 'pairing expired or unknown — start again from the bridge' });
+  if (row.session_token || row.claimed_at) return res.status(409).json({ error: 'already approved' });
+  // A fresh session, distinct from the browser's: signing out of the browser
+  // later must not disconnect the bridge.
+  const { token } = await createSession(req.user.id);
+  await pool.query('UPDATE pairings SET session_token = $1, username = $2 WHERE id = $3', [token, req.user.username, row.id]);
+  res.json({ ok: true });
+}));
+
+app.post('/api/pair/claim', ah(async (req, res) => {
+  const { code, secret } = req.body ?? {};
+  const r = await pool.query('SELECT * FROM pairings WHERE code = $1', [String(code || '')]);
+  const row = r.rows[0];
+  if (!row || row.claimed_at || row.expires_at <= new Date().toISOString()) {
+    return res.status(410).json({ error: 'pairing expired' });
+  }
+  if (digestToken(String(secret || '')) !== row.secret_hash) return res.status(403).json({ error: 'wrong secret' });
+  if (!row.session_token) return res.json({ pending: true });
+  // Hand over exactly once, then scrub the raw token from the row.
+  await pool.query(`UPDATE pairings SET session_token = NULL, claimed_at = $1 WHERE id = $2`, [new Date().toISOString(), row.id]);
+  res.json({ token: row.session_token, username: row.username });
 }));
 
 // --- groups ----------------------------------------------------------------

@@ -21,16 +21,41 @@ function setView() {
   $('#account-chip').textContent = account ? `signed in as ${account.username}` : '';
 }
 
-// --- sign in / out ----------------------------------------------------------
+// --- connect account (device pairing) ---------------------------------------
+// One click: the bridge starts a pairing, we open buildhall.ai in a tab, the
+// user approves there, and we poll until the bridge holds a session. No
+// passwords ever pass through this app.
 
-$('#signin').addEventListener('submit', async (e) => {
-  e.preventDefault(); hideErr('#signin-err');
+let pairPoll = null;
+
+$('#connect-account').addEventListener('click', async () => {
+  hideErr('#signin-err');
+  const btn = $('#connect-account'); const status = $('#signin-status');
+  btn.disabled = true;
   try {
-    ({ account } = await api('/api/account/login', {
-      method: 'POST', body: JSON.stringify(Object.fromEntries(new FormData(e.target))),
-    }));
-    e.target.reset(); setView(); refresh();
-  } catch (err) { showErr('#signin-err', err.message); }
+    const { pairUrl } = await api('/api/pair/begin', { method: 'POST', body: '{}' });
+    window.open(pairUrl, '_blank');
+    status.textContent = 'Waiting for you to approve in the browser tab…';
+    status.hidden = false;
+    clearInterval(pairPoll);
+    pairPoll = setInterval(async () => {
+      try {
+        const r = await api('/api/pair/status');
+        if (r.state === 'done') {
+          clearInterval(pairPoll); pairPoll = null;
+          account = r.account; status.hidden = true; btn.disabled = false;
+          startSignedIn();
+        } else if (r.state === 'expired') {
+          clearInterval(pairPoll); pairPoll = null;
+          status.hidden = true; btn.disabled = false;
+          showErr('#signin-err', 'That pairing expired — click Connect again.');
+        }
+      } catch { /* transient; keep polling */ }
+    }, 2000);
+  } catch (err) {
+    btn.disabled = false;
+    showErr('#signin-err', err.message);
+  }
 });
 
 $('#signout').addEventListener('click', async () => {
@@ -215,8 +240,16 @@ async function refresh() {
   await Promise.all([loadAgents(), loadConnections()]);
 }
 
+let refreshTimer = null;
+async function startSignedIn() {
+  setView();
+  await loadGroups();
+  refresh();
+  if (!refreshTimer) refreshTimer = setInterval(refresh, 4000);
+}
+
 (async () => {
   ({ account } = await api('/api/account').catch(() => ({ account: null })));
   setView();
-  if (account) { await loadGroups(); refresh(); setInterval(refresh, 4000); }
+  if (account) startSignedIn();
 })();

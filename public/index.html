@@ -206,6 +206,14 @@
       <p class="muted" id="auth-verify-msg"></p>
       <button type="button" class="btn" id="auth-verify-back" hidden>Back to log in</button>
     </div>
+
+    <!-- bridge pairing approval (/pair?code=...) -->
+    <div id="auth-pair" hidden>
+      <h2 class="auth-h" id="auth-pair-h">Connect your computer</h2>
+      <p class="muted" id="auth-pair-msg">Checking…</p>
+      <p class="auth-error" id="auth-pair-error" hidden></p>
+      <button type="button" class="btn primary" id="auth-pair-approve" hidden>Approve</button>
+    </div>
   </dialog>
 
   <script src="/app.js" type="module"></script>
