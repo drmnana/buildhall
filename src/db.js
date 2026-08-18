@@ -156,6 +156,43 @@ CREATE TABLE IF NOT EXISTS bridge_tokens (
 );
 CREATE INDEX IF NOT EXISTS idx_bridge_tokens_session ON bridge_tokens (session_id);
 
+-- Moderation (human-in-loop): user reports, classifier flags, and the state
+-- the kill switch flips. Scope is public-feed + reported content only —
+-- private groups are never scanned unless something in them is reported.
+ALTER TABLE users  ADD COLUMN IF NOT EXISTS suspended_at TEXT;
+ALTER TABLE users  ADD COLUMN IF NOT EXISTS aup_accepted_at TEXT;
+ALTER TABLE groups ADD COLUMN IF NOT EXISTS frozen_at TEXT;
+ALTER TABLE messages ADD COLUMN IF NOT EXISTS mod_scanned_at TEXT;
+
+CREATE TABLE IF NOT EXISTS reports (
+  id              BIGSERIAL PRIMARY KEY,
+  reporter_id     BIGINT NOT NULL REFERENCES users(id),
+  group_id        BIGINT NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+  message_id      BIGINT REFERENCES messages(id) ON DELETE CASCADE,
+  reason          TEXT NOT NULL,
+  detail          TEXT NOT NULL DEFAULT '',
+  status          TEXT NOT NULL DEFAULT 'open'
+                  CHECK (status IN ('open','actioned','dismissed')),
+  created_at      TEXT NOT NULL DEFAULT ${NOW_ISO},
+  resolved_at     TEXT,
+  resolved_by     BIGINT REFERENCES users(id),
+  resolution_note TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_reports_status ON reports (status);
+
+CREATE TABLE IF NOT EXISTS moderation_flags (
+  id          BIGSERIAL PRIMARY KEY,
+  message_id  BIGINT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+  source      TEXT NOT NULL CHECK (source IN ('classifier','report')),
+  category    TEXT NOT NULL,
+  severity    TEXT NOT NULL CHECK (severity IN ('low','medium','high')),
+  rationale   TEXT NOT NULL DEFAULT '',
+  created_at  TEXT NOT NULL DEFAULT ${NOW_ISO},
+  reviewed_at TEXT,
+  UNIQUE (message_id, source)
+);
+CREATE INDEX IF NOT EXISTS idx_mod_flags_unreviewed ON moderation_flags (reviewed_at) WHERE reviewed_at IS NULL;
+
 -- Device pairing (bridge <-> account), device-code style. The bridge starts a
 -- pairing and polls with a secret; the user approves from a logged-in browser.
 -- session_token briefly holds the RAW session token between approve and claim

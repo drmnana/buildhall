@@ -267,3 +267,8 @@ input:focus, select:focus, textarea:focus {
   font-family:ui-monospace,SFMono-Regular,Menlo,monospace;white-space:nowrap;
   overflow-x:auto;-webkit-overflow-scrolling:touch}
 .cmdbox .btn.small{flex:none;background:#fff;color:var(--bh-navy-900);border-color:#fff}
+
+/* --- moderation ------------------------------------------------------------ */
+.report-btn { margin-left: auto; font-size: 11px; color: #9ca3af; opacity: 0; transition: opacity .15s; }
+.msg:hover .report-btn { opacity: 1; }
+.report-btn:hover { color: #b91c1c; }

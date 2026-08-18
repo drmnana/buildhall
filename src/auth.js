@@ -66,6 +66,13 @@ export async function createSession(userId) {
     'INSERT INTO sessions (user_id, token_hash, expires_at) VALUES ($1, $2, $3) RETURNING id',
     [userId, digest, expiryISO(SESSION_TTL_DAYS)],
   );
+  // Every login path (password, verify, reset, OAuth, pairing) funnels through
+  // here, and every login screen says "By continuing you agree to the AUP" —
+  // so this is the one place consent is stamped.
+  await pool.query(
+    `UPDATE users SET aup_accepted_at = ${NOW_ISO} WHERE id = $1 AND aup_accepted_at IS NULL`,
+    [userId],
+  );
   return { token: raw, sessionId: Number(row.id) };
 }
 
@@ -87,7 +94,10 @@ export async function resolveToken(raw) {
   if (session) {
     if (session.revoked_at || session.expires_at <= now) return null;
     const user = await one('SELECT * FROM users WHERE id = $1', [session.user_id]);
-    if (!user) return null;
+    // A suspended user has NO valid credentials, sessions and bridge tokens
+    // alike — the kill switch cuts everything at the one place identity is
+    // resolved, so no endpoint can forget to check.
+    if (!user || user.suspended_at) return null;
     return { user, sessionId: session.session_id, kind: 'session', agentName: null, bridgeTokenId: null };
   }
 
@@ -105,7 +115,7 @@ export async function resolveToken(raw) {
   if (!bridge) return null;
   if (bridge.bridge_revoked || bridge.session_revoked || bridge.expires_at <= now) return null;
   const user = await one('SELECT * FROM users WHERE id = $1', [bridge.user_id]);
-  if (!user) return null;
+  if (!user || user.suspended_at) return null;
   return {
     user,
     sessionId: bridge.session_id,

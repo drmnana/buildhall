@@ -9,7 +9,7 @@ import { WebSocketServer, WebSocket } from 'ws';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { pool, init } from './db.js';
+import { pool, init, NOW_ISO } from './db.js';
 import { scheduleBackups, backupOnce, backupsConfigured } from './backup.js';
 import {
   createSession,
@@ -28,6 +28,7 @@ import {
   verifyPassword,
 } from './auth.js';
 import { sendVerificationEmail, sendPasswordResetEmail } from './email.js';
+import { scheduleScans, scanOnce, classifierConfigured } from './moderation.js';
 import { providerConfigured, authorizeUrl, verifyState, exchangeCode } from './oauth.js';
 import {
   consumeFailure,
@@ -375,6 +376,7 @@ app.get('/api/auth/me', requireUser, (req, res) => {
     user: { ...publicUser(req.user), email: req.user.email, emailVerified: req.user.email_verified },
     tokenKind: req.identity.kind,
     agentName: req.identity.agentName,
+    isAdmin: isAdmin(req.user),
   });
 });
 
@@ -489,6 +491,106 @@ app.post('/api/pair/claim', ah(async (req, res) => {
   res.json({ token: row.session_token, username: row.username });
 }));
 
+// --- moderation ------------------------------------------------------------
+// Human-in-loop: users report, an optional classifier flags, a human admin
+// acts. Enforcement is the kill switch: suspend a user (all their credentials
+// die at resolveToken) or freeze a group (readable, no new posts).
+
+// Admins are named by env (ADMIN_HANDLES="drmnana,oslonetwork") — no
+// migration, no self-service escalation path.
+const ADMIN_HANDLES = new Set(
+  String(process.env.ADMIN_HANDLES || '').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean),
+);
+function isAdmin(user) { return ADMIN_HANDLES.has(String(user.username).toLowerCase()); }
+function requireAdmin(req, res, next) {
+  if (!isAdmin(req.user)) return res.status(403).json({ error: 'admin only' });
+  next();
+}
+
+const REPORT_REASONS = ['hacking-malware', 'fraud-scam', 'harassment', 'illegal', 'spam', 'other'];
+// (the user-facing report route lives below, after requireMember is defined)
+
+// --- admin review queue ---
+app.get('/api/admin/mod/queue', requireUser, requireAdmin, ah(async (_req, res) => {
+  const reports = (await pool.query(
+    `SELECT r.*, u.username AS reporter, g.slug AS group_slug, m.text AS message_text,
+            mu.username AS author, m.agent_name AS author_agent
+       FROM reports r
+       JOIN users u ON u.id = r.reporter_id
+       JOIN groups g ON g.id = r.group_id
+       LEFT JOIN messages m ON m.id = r.message_id
+       LEFT JOIN users mu ON mu.id = m.user_id
+      WHERE r.status = 'open' ORDER BY r.id`,
+  )).rows;
+  const flags = (await pool.query(
+    `SELECT f.*, m.text AS message_text, g.slug AS group_slug, mu.username AS author, m.agent_name AS author_agent, m.user_id AS author_id
+       FROM moderation_flags f
+       JOIN messages m ON m.id = f.message_id
+       JOIN groups g ON g.id = m.group_id
+       JOIN users mu ON mu.id = m.user_id
+      WHERE f.reviewed_at IS NULL ORDER BY f.id`,
+  )).rows;
+  res.json({ reports, flags, classifier: classifierConfigured() });
+}));
+
+app.post('/api/admin/mod/reports/:id/resolve', requireUser, requireAdmin, ah(async (req, res) => {
+  const status = String(req.body?.status || '');
+  if (!['actioned', 'dismissed'].includes(status)) return res.status(400).json({ error: "status must be 'actioned' or 'dismissed'" });
+  const r = await pool.query(
+    `UPDATE reports SET status = $1, resolved_at = ${NOW_ISO}, resolved_by = $2, resolution_note = $3
+      WHERE id = $4 AND status = 'open' RETURNING id`,
+    [status, req.user.id, String(req.body?.note || '').slice(0, 1000), Number(req.params.id)],
+  );
+  if (!r.rows[0]) return res.status(404).json({ error: 'no such open report' });
+  res.json({ ok: true });
+}));
+
+app.post('/api/admin/mod/flags/:id/review', requireUser, requireAdmin, ah(async (req, res) => {
+  const r = await pool.query(
+    `UPDATE moderation_flags SET reviewed_at = ${NOW_ISO} WHERE id = $1 AND reviewed_at IS NULL RETURNING id`,
+    [Number(req.params.id)],
+  );
+  if (!r.rows[0]) return res.status(404).json({ error: 'no such unreviewed flag' });
+  res.json({ ok: true });
+}));
+
+// --- kill switch ---
+app.post('/api/admin/mod/users/:username/suspend', requireUser, requireAdmin, ah(async (req, res) => {
+  const target = await getUserByUsername(String(req.params.username));
+  if (!target) return res.status(404).json({ error: 'no such user' });
+  if (isAdmin(target)) return res.status(400).json({ error: 'cannot suspend an admin' });
+  await pool.query(`UPDATE users SET suspended_at = ${NOW_ISO} WHERE id = $1`, [target.id]);
+  // Credentials are already dead (resolveToken checks suspended_at); also cut
+  // every live socket so connected agents drop immediately.
+  const sessions = (await pool.query('SELECT id FROM sessions WHERE user_id = $1 AND revoked_at IS NULL', [target.id])).rows;
+  let closed = 0;
+  for (const s of sessions) closed += closeSocketsForSession(Number(s.id));
+  res.json({ ok: true, suspended: target.username, closedConnections: closed });
+}));
+
+app.post('/api/admin/mod/users/:username/unsuspend', requireUser, requireAdmin, ah(async (req, res) => {
+  const r = await pool.query('UPDATE users SET suspended_at = NULL WHERE username = $1 AND suspended_at IS NOT NULL RETURNING username', [String(req.params.username)]);
+  if (!r.rows[0]) return res.status(404).json({ error: 'no such suspended user' });
+  res.json({ ok: true });
+}));
+
+app.post('/api/admin/mod/groups/:slug/freeze', requireUser, requireAdmin, ah(async (req, res) => {
+  const r = await pool.query(`UPDATE groups SET frozen_at = ${NOW_ISO} WHERE slug = $1 AND frozen_at IS NULL RETURNING slug`, [String(req.params.slug)]);
+  if (!r.rows[0]) return res.status(404).json({ error: 'no such unfrozen group' });
+  res.json({ ok: true });
+}));
+
+app.post('/api/admin/mod/groups/:slug/unfreeze', requireUser, requireAdmin, ah(async (req, res) => {
+  const r = await pool.query('UPDATE groups SET frozen_at = NULL WHERE slug = $1 AND frozen_at IS NOT NULL RETURNING slug', [String(req.params.slug)]);
+  if (!r.rows[0]) return res.status(404).json({ error: 'no such frozen group' });
+  res.json({ ok: true });
+}));
+
+// Manual classifier pass (also runs on a timer when configured).
+app.post('/api/admin/mod/scan', requireUser, requireAdmin, ah(async (_req, res) => {
+  res.json(await scanOnce());
+}));
+
 // --- groups ----------------------------------------------------------------
 
 app.get('/api/feed', ah(async (_req, res) => res.json({ groups: await publicFeed() })));
@@ -542,6 +644,22 @@ const requireMember = ah(async (req, res, next) => {
   next();
 });
 
+// Any logged-in user may report a message in a group they can see.
+app.post('/api/groups/:slug/messages/:id/report', requireUser, requireMember, ah(async (req, res) => {
+  const messageId = Number(req.params.id);
+  if (!Number.isInteger(messageId) || messageId <= 0) return res.status(400).json({ error: 'invalid message id' });
+  if (!(await getMessageInGroup(req.group.id, messageId))) return res.status(404).json({ error: 'no such message in this group' });
+  const reason = String(req.body?.reason || '');
+  if (!REPORT_REASONS.includes(reason)) return res.status(400).json({ error: `reason must be one of: ${REPORT_REASONS.join(', ')}` });
+  const detail = String(req.body?.detail || '').slice(0, 1000);
+  const r = await pool.query(
+    'INSERT INTO reports (reporter_id, group_id, message_id, reason, detail) VALUES ($1, $2, $3, $4, $5) RETURNING id',
+    [req.user.id, req.group.id, messageId, reason, detail],
+  );
+  // A report pulls the message into classifier scope even in a private group.
+  res.status(201).json({ ok: true, reportId: Number(r.rows[0].id) });
+}));
+
 // Query params must be non-negative integers; anything else is a 400 rather
 // than silently coercing to 0 and returning the wrong page.
 function intParam(value, fallback) {
@@ -587,6 +705,8 @@ app.get('/api/groups/:slug/context', requireUser, requireMember, ah(async (req, 
 
 app.post('/api/groups/:slug/messages', requireUser, requireMember, ah(async (req, res) => {
   if (!req.membership) return res.status(403).json({ error: 'join the group to post' });
+  // Frozen groups are readable (evidence stays visible) but accept no posts.
+  if (req.group.frozen_at) return res.status(403).json({ error: 'this group is frozen by moderation' });
   const { kind, text, pinnedMessageId } = req.body ?? {};
   // Attribution is derived from the credential, never from the request body.
   // A bridge token posts as its own agent; a login session posts as the human.
@@ -775,6 +895,7 @@ init()
     server.listen(PORT, () => {
       console.log(`Buildhall listening on http://localhost:${PORT}`);
       scheduleBackups();
+      scheduleScans();
     });
   })
   .catch((err) => {

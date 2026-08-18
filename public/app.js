@@ -13,6 +13,7 @@ let currentGroup = null;
 let currentRole = null;
 let myGroups = [];
 let socket = null;
+let meIsAdmin = false;
 
 // --- api -------------------------------------------------------------------
 
@@ -162,6 +163,8 @@ function showFeed() {
   socket = null;
   $('#feed-view').hidden = false;
   $('#group-view').hidden = true;
+  $('#admin-view').hidden = true;
+  $('#nav-admin').classList.remove('active');
   $('#conn-status').hidden = true;
   $('#nav-home').classList.add('active');
   document.querySelectorAll('#group-list li').forEach((li) => li.classList.remove('active'));
@@ -307,7 +310,9 @@ async function selectGroup(group) {
   reconnectDelay = RECONNECT_BASE_MS;
   $('#feed-view').hidden = true;
   $('#group-view').hidden = false;
+  $('#admin-view').hidden = true;
   $('#nav-home').classList.remove('active');
+  $('#nav-admin').classList.remove('active');
   $('#chat-header').textContent = group.name;
   $('#chat-sub').textContent = group.goal || group.description || '';
   $('#composer').hidden = false;
@@ -367,12 +372,98 @@ function renderMessage(m) {
   div.innerHTML =
     `<div class="meta"><span class="author">${author}</span>` +
     `<span class="badge ${badge}">${badge}</span>` +
-    `<span>${new Date(m.created_at).toLocaleTimeString()}</span></div>` +
+    `<span>${new Date(m.created_at).toLocaleTimeString()}</span>` +
+    `<button class="linkish report-btn" title="Report this message">report</button></div>` +
     `<div class="body">${escapeHtml(m.text)}</div>`;
+  div.querySelector('.report-btn').addEventListener('click', () => reportMessage(m.id));
   const box = $('#messages');
   box.append(div);
   box.scrollTop = box.scrollHeight;
 }
+
+// --- reporting (any member can flag a message for human review) -------------
+
+const REPORT_REASONS = ['hacking-malware', 'fraud-scam', 'harassment', 'illegal', 'spam', 'other'];
+
+async function reportMessage(messageId) {
+  if (!currentGroup) return;
+  const reason = prompt(
+    `Report this message. Reason — type one of:\n${REPORT_REASONS.join(', ')}`, 'other');
+  if (reason === null) return;
+  if (!REPORT_REASONS.includes(reason.trim())) return alert(`Reason must be one of: ${REPORT_REASONS.join(', ')}`);
+  const detail = prompt('Anything to add? (optional)') || '';
+  try {
+    await api(`/groups/${currentGroup.slug}/messages/${messageId}/report`, {
+      method: 'POST',
+      body: JSON.stringify({ reason: reason.trim(), detail }),
+    });
+    alert('Reported — a human will review it. Thank you.');
+  } catch (err) { alert(err.message); }
+}
+
+// --- moderation queue (admins) ----------------------------------------------
+
+function showAdmin() {
+  $('#feed-view').hidden = true;
+  $('#group-view').hidden = true;
+  $('#admin-view').hidden = false;
+  $('#nav-home').classList.remove('active');
+  $('#nav-admin').classList.add('active');
+  loadAdminQueue();
+}
+
+function adminCard({ title, meta, text, buttons }) {
+  const el = document.createElement('article');
+  el.className = 'post';
+  el.innerHTML =
+    `<div class="post-head"><div><h3>${title}</h3><div class="post-meta">${meta}</div></div></div>` +
+    `<div class="post-body">${text}</div><div class="post-foot"></div>`;
+  const foot = el.querySelector('.post-foot');
+  for (const [label, fn, primary] of buttons) {
+    const b = document.createElement('button');
+    b.className = primary ? 'btn small primary' : 'btn small';
+    b.textContent = label;
+    b.onclick = async () => { b.disabled = true; try { await fn(); } catch (e) { alert(e.message); } loadAdminQueue(); };
+    foot.append(b);
+  }
+  return el;
+}
+
+async function loadAdminQueue() {
+  const { reports, flags, classifier } = await api('/admin/mod/queue');
+  const box = $('#admin-queue');
+  box.innerHTML = classifier ? '' : '<p class="muted">Classifier is off (no API key set) — showing user reports only.</p>';
+  $('#admin-empty').hidden = reports.length + flags.length > 0;
+  for (const r of reports) {
+    box.append(adminCard({
+      title: `Report: ${escapeHtml(r.reason)}`,
+      meta: `by ${escapeHtml(r.reporter)} · group ${escapeHtml(r.group_slug)} · ${new Date(r.created_at).toLocaleString()}${r.detail ? ` · “${escapeHtml(r.detail)}”` : ''}`,
+      text: r.message_text
+        ? `<b>${escapeHtml(r.author_agent || r.author || '')}:</b> ${escapeHtml(r.message_text.slice(0, 600))}`
+        : '<span class="muted">(group-level report)</span>',
+      buttons: [
+        ['Dismiss', () => api(`/admin/mod/reports/${r.id}/resolve`, { method: 'POST', body: JSON.stringify({ status: 'dismissed' }) })],
+        ['Mark actioned', () => api(`/admin/mod/reports/${r.id}/resolve`, { method: 'POST', body: JSON.stringify({ status: 'actioned' }) }), true],
+        ['Freeze group', () => confirm(`Freeze group ${r.group_slug}? Nobody can post until unfrozen.`) && api(`/admin/mod/groups/${r.group_slug}/freeze`, { method: 'POST' })],
+        ...(r.author ? [[`Suspend ${r.author}`, () => confirm(`Suspend ${r.author}? All their sessions and agents disconnect immediately.`) && api(`/admin/mod/users/${r.author}/suspend`, { method: 'POST' })]] : []),
+      ],
+    }));
+  }
+  for (const f of flags) {
+    box.append(adminCard({
+      title: `Classifier flag: ${escapeHtml(f.category)} (${escapeHtml(f.severity)})`,
+      meta: `group ${escapeHtml(f.group_slug)} · ${new Date(f.created_at).toLocaleString()} · ${escapeHtml(f.rationale)}`,
+      text: `<b>${escapeHtml(f.author_agent || f.author || '')}:</b> ${escapeHtml(f.message_text.slice(0, 600))}`,
+      buttons: [
+        ['Mark reviewed', () => api(`/admin/mod/flags/${f.id}/review`, { method: 'POST' }), true],
+        [`Suspend ${f.author}`, () => confirm(`Suspend ${f.author}? All their sessions and agents disconnect immediately.`) && api(`/admin/mod/users/${f.author}/suspend`, { method: 'POST' })],
+        ['Freeze group', () => confirm(`Freeze group ${f.group_slug}?`) && api(`/admin/mod/groups/${f.group_slug}/freeze`, { method: 'POST' })],
+      ],
+    }));
+  }
+}
+
+$('#nav-admin').addEventListener('click', showAdmin);
 
 const RECONNECT_BASE_MS = 1000;
 const RECONNECT_MAX_MS = 30000;
@@ -473,11 +564,13 @@ async function boot() {
     const info = await api('/auth/me');
     if (!info) return;
     me = info.user;
+    meIsAdmin = !!info.isAdmin;
   } catch {
     return signOutLocally();
   }
   $('#session').innerHTML = `signed in as <b>${escapeHtml(me.username)}</b>`;
   $('#logout-btn').hidden = false;
+  $('#nav-admin').hidden = !meIsAdmin;
   showFeed();
   await loadGroups();
   await Promise.all([loadFeed(), loadBridgeTokens()]);

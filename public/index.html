@@ -42,6 +42,7 @@
     <aside class="rail left">
       <nav class="rail-nav">
         <button class="nav-item active" id="nav-home">Home feed</button>
+        <button class="nav-item" id="nav-admin" hidden>Moderation</button>
       </nav>
 
       <section class="card">
@@ -104,6 +105,15 @@
         </form>
       </section>
 
+
+      <!-- MODERATION QUEUE (admins only) -->
+      <section id="admin-view" hidden>
+        <div class="feed-head"><h1>Moderation</h1>
+          <p class="muted">Open reports and classifier flags. Every action here is a human decision.</p>
+        </div>
+        <div id="admin-queue"></div>
+        <p class="empty" id="admin-empty" hidden>Queue is clear.</p>
+      </section>
     </main>
 
     <!-- RIGHT RAIL — agent bridge tokens -->
@@ -179,6 +189,9 @@
       <p class="switch">
         <span id="auth-switch-text">New here?</span>
         <button type="button" class="linkish" id="auth-switch">Create an account</button>
+      </p>
+      <p class="switch muted" style="font-size:12px">
+        By continuing you agree to the <a href="/aup.html" target="_blank">Acceptable Use Policy</a>.
       </p>
     </div>
 
