@@ -272,3 +272,15 @@ input:focus, select:focus, textarea:focus {
 .report-btn { margin-left: auto; font-size: 11px; color: #9ca3af; opacity: 0; transition: opacity .15s; }
 .msg:hover .report-btn { opacity: 1; }
 .report-btn:hover { color: #b91c1c; }
+
+/* --- day separators --------------------------------------------------------- */
+.day-sep {
+  display: flex; align-items: center; gap: .7rem; margin: .4rem 0;
+  color: var(--bh-slate-500); font-size: .72rem; text-transform: uppercase; letter-spacing: .06em;
+}
+.day-sep::before, .day-sep::after { content: ""; flex: 1; height: 1px; background: var(--bh-slate-200); }
+
+/* --- members card ------------------------------------------------------------ */
+.member-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: .45rem; }
+.member-list li { display: flex; align-items: center; gap: .4rem; flex-wrap: wrap; font-size: .88rem; }
+.member-list .name { font-weight: 600; color: var(--bh-navy-800); }

@@ -167,6 +167,7 @@ function showFeed() {
   $('#nav-admin').classList.remove('active');
   $('#conn-status').hidden = true;
   $('#nav-home').classList.add('active');
+  $('#members-card').hidden = true;
   document.querySelectorAll('#group-list li').forEach((li) => li.classList.remove('active'));
 }
 
@@ -307,6 +308,7 @@ let lastMessageId = 0;
 async function selectGroup(group) {
   currentGroup = group;
   lastMessageId = 0;
+  lastMsgDay = null;
   reconnectDelay = RECONNECT_BASE_MS;
   $('#feed-view').hidden = true;
   $('#group-view').hidden = false;
@@ -329,6 +331,27 @@ async function selectGroup(group) {
   renderCheckpointBanner(checkpoints[0] ?? null);
   messages.forEach(renderMessage);
   connectSocket(group);
+  loadMembers(group);
+}
+
+// Right-rail members card: who's here, their role, and the agents they've
+// brought into this group. Non-blocking — a failure just leaves the card hidden.
+async function loadMembers(group) {
+  try {
+    const { members } = await api(`/groups/${group.slug}/members`);
+    if (currentGroup?.id !== group.id) return;
+    const ul = $('#member-list');
+    ul.innerHTML = '';
+    for (const m of members) {
+      const li = document.createElement('li');
+      const agents = m.agents.map((a) => `<span class="badge agent">${escapeHtml(a)}</span>`).join(' ');
+      li.innerHTML =
+        `<span class="name">${escapeHtml(m.display_name || m.username)}</span>` +
+        (m.role === 'admin' ? '<span class="badge">admin</span>' : '') + agents;
+      ul.append(li);
+    }
+    $('#members-card').hidden = members.length === 0;
+  } catch { $('#members-card').hidden = true; }
 }
 
 // The banner is the group's standing summary: the latest checkpoint, always
@@ -354,10 +377,24 @@ function renderCheckpointBanner(cp) {
     : null;
 }
 
+// Day separators: track the last rendered day so long threads read in chapters.
+let lastMsgDay = null;
+
 function renderMessage(m) {
   // the socket can replay something we already fetched during a reconnect
   if (m.id <= lastMessageId) return;
   lastMessageId = m.id;
+  const day = new Date(m.created_at).toDateString();
+  if (day !== lastMsgDay) {
+    lastMsgDay = day;
+    const sep = document.createElement('div');
+    sep.className = 'day-sep';
+    const today = new Date().toDateString();
+    const yesterday = new Date(Date.now() - 864e5).toDateString();
+    sep.innerHTML = `<span>${day === today ? 'Today' : day === yesterday ? 'Yesterday'
+      : new Date(m.created_at).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })}</span>`;
+    $('#messages').append(sep);
+  }
   // checkpoint rows are messages, so a live one is also the new latest summary
   if (m.kind === 'checkpoint') renderCheckpointBanner(m);
   const div = document.createElement('div');
@@ -430,10 +467,28 @@ function adminCard({ title, meta, text, buttons }) {
 }
 
 async function loadAdminQueue() {
-  const { reports, flags, classifier } = await api('/admin/mod/queue');
+  const { reports, flags, frozen = [], suspended = [], classifier } = await api('/admin/mod/queue');
   const box = $('#admin-queue');
   box.innerHTML = classifier ? '' : '<p class="muted">Classifier is off (no API key set) — showing user reports only.</p>';
-  $('#admin-empty').hidden = reports.length + flags.length > 0;
+  $('#admin-empty').hidden = reports.length + flags.length + frozen.length + suspended.length > 0;
+  // Active enforcement first — freezes and suspensions are reversible, and
+  // this is the only place they're visible.
+  for (const g of frozen) {
+    box.append(adminCard({
+      title: `Frozen group: ${escapeHtml(g.name)}`,
+      meta: `${escapeHtml(g.slug)} · frozen ${new Date(g.frozen_at).toLocaleString()}`,
+      text: '<span class="muted">Readable by members, but nobody can post.</span>',
+      buttons: [['Unfreeze', () => api(`/admin/mod/groups/${g.slug}/unfreeze`, { method: 'POST' }), true]],
+    }));
+  }
+  for (const u of suspended) {
+    box.append(adminCard({
+      title: `Suspended user: ${escapeHtml(u.username)}`,
+      meta: `suspended ${new Date(u.suspended_at).toLocaleString()}`,
+      text: '<span class="muted">All their sessions and agents are locked out.</span>',
+      buttons: [['Unsuspend', () => confirm(`Restore ${u.username}'s access?`) && api(`/admin/mod/users/${u.username}/unsuspend`, { method: 'POST' }), true]],
+    }));
+  }
   for (const r of reports) {
     box.append(adminCard({
       title: `Report: ${escapeHtml(r.reason)}`,

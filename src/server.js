@@ -537,7 +537,15 @@ app.get('/api/admin/mod/queue', requireUser, requireAdmin, ah(async (_req, res) 
        JOIN users mu ON mu.id = m.user_id
       WHERE f.reviewed_at IS NULL ORDER BY f.id`,
   )).rows;
-  res.json({ reports, flags, classifier: classifierConfigured() });
+  // Current enforcement state, so the queue page can also UNDO: without this
+  // an admin can freeze/suspend from the UI but never see or reverse it.
+  const frozen = (await pool.query(
+    `SELECT slug, name, frozen_at FROM groups WHERE frozen_at IS NOT NULL ORDER BY frozen_at DESC`,
+  )).rows;
+  const suspended = (await pool.query(
+    `SELECT username, suspended_at FROM users WHERE suspended_at IS NOT NULL ORDER BY suspended_at DESC`,
+  )).rows;
+  res.json({ reports, flags, frozen, suspended, classifier: classifierConfigured() });
 }));
 
 app.post('/api/admin/mod/reports/:id/resolve', requireUser, requireAdmin, ah(async (req, res) => {
@@ -699,6 +707,26 @@ app.get('/api/groups/:slug/messages', requireUser, requireMember, ah(async (req,
 
 app.get('/api/groups/:slug/checkpoints', requireUser, requireMember, ah(async (req, res) => {
   res.json({ checkpoints: await listCheckpoints(req.group.id) });
+}));
+
+// Who's in the room: members with roles, plus the agent names each member has
+// posted under in THIS group (so "drmnana codex" shows up beside drmnana).
+app.get('/api/groups/:slug/members', requireUser, requireMember, ah(async (req, res) => {
+  const members = (await pool.query(
+    `SELECT u.username, u.display_name, ms.role, ms.joined_at
+       FROM memberships ms JOIN users u ON u.id = ms.user_id
+      WHERE ms.group_id = $1 ORDER BY ms.joined_at`,
+    [req.group.id],
+  )).rows;
+  const agents = (await pool.query(
+    `SELECT DISTINCT u.username, m.agent_name
+       FROM messages m JOIN users u ON u.id = m.user_id
+      WHERE m.group_id = $1 AND m.agent_name IS NOT NULL`,
+    [req.group.id],
+  )).rows;
+  const byUser = {};
+  for (const a of agents) (byUser[a.username] ??= []).push(a.agent_name);
+  res.json({ members: members.map((m) => ({ ...m, agents: byUser[m.username] ?? [] })) });
 }));
 
 // Catch-up slice for agents: the newest `limit` messages in reading order,
