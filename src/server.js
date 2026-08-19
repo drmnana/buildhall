@@ -127,6 +127,13 @@ for (const p of ['/verify', '/reset', '/pair']) {
 app.get('/welcome', (_req, res) => res.sendFile(path.join(__dirname, '..', 'public', 'landing.html')));
 app.get('/og-image.png', (_req, res) => res.sendFile(path.join(__dirname, '..', 'brand', 'og-image-1200x630.png')));
 
+// New app shell pages (Codex UI wired to this API). Additive: the classic app
+// stays at / until /home reaches parity. Auth is enforced by the API the pages
+// call, plus a client-side gate that bounces anonymous visitors to /welcome.
+app.get('/home', (_req, res) => res.sendFile(path.join(__dirname, '..', 'public', 'home.html')));
+app.get('/account', (_req, res) => res.sendFile(path.join(__dirname, '..', 'public', 'account.html')));
+app.get('/admin', (_req, res) => res.sendFile(path.join(__dirname, '..', 'public', 'admin.html')));
+
 app.use(express.static(path.join(__dirname, '..', 'public')));
 
 // Brand assets are served straight from brand/ (read-only originals from the
@@ -387,6 +394,15 @@ app.get('/api/auth/me', requireUser, (req, res) => {
   });
 });
 
+// Update own profile. Display name only for now — username is the public
+// handle agents are named after and email changes need re-verification.
+app.patch('/api/auth/me', requireUser, requireSessionToken, ah(async (req, res) => {
+  const name = String(req.body?.displayName || '').trim();
+  if (!name || name.length > 80) return res.status(400).json({ error: 'displayName must be 1-80 characters' });
+  await pool.query('UPDATE users SET display_name = $1 WHERE id = $2', [name, req.user.id]);
+  res.json({ ok: true, displayName: name });
+}));
+
 app.post('/api/auth/logout', requireUser, requireSessionToken, ah(async (req, res) => {
   const { revokedBridgeTokenIds } = await revokeSession(req.identity.sessionId);
   // Revoking rows does not disconnect anyone: sockets already open would keep
@@ -611,6 +627,50 @@ app.get('/api/admin/storage', requireUser, requireAdmin, ah(async (_req, res) =>
   res.json(await storageCheckOnce());
 }));
 
+// One-call dashboard payload for /admin: platform counts, recent groups and
+// users (capped), the latest checkpoints, and system health signals.
+app.get('/api/admin/overview', requireUser, requireAdmin, ah(async (_req, res) => {
+  const one = async (sql) => Number((await pool.query(sql)).rows[0].n);
+  const [users, groups, messages, checkpoints, openReports, unreviewedFlags, frozen, suspended] = await Promise.all([
+    one('SELECT COUNT(*)::int AS n FROM users'),
+    one('SELECT COUNT(*)::int AS n FROM groups'),
+    one('SELECT COUNT(*)::int AS n FROM messages'),
+    one("SELECT COUNT(*)::int AS n FROM messages WHERE kind = 'checkpoint'"),
+    one("SELECT COUNT(*)::int AS n FROM reports WHERE status = 'open'"),
+    one('SELECT COUNT(*)::int AS n FROM moderation_flags WHERE reviewed_at IS NULL'),
+    one('SELECT COUNT(*)::int AS n FROM groups WHERE frozen_at IS NOT NULL'),
+    one('SELECT COUNT(*)::int AS n FROM users WHERE suspended_at IS NOT NULL'),
+  ]);
+  const groupList = (await pool.query(
+    `SELECT g.slug, g.name, g.visibility, g.frozen_at,
+            (SELECT COUNT(*)::int FROM memberships m WHERE m.group_id = g.id) AS member_count,
+            (SELECT COUNT(*)::int FROM messages ms WHERE ms.group_id = g.id) AS message_count
+       FROM groups g ORDER BY g.created_at DESC LIMIT 25`,
+  )).rows;
+  const userList = (await pool.query(
+    `SELECT u.username, u.display_name, u.suspended_at, u.created_at,
+            (SELECT COUNT(*)::int FROM memberships m WHERE m.user_id = u.id) AS group_count
+       FROM users u ORDER BY u.created_at DESC LIMIT 25`,
+  )).rows;
+  const recentCheckpoints = (await pool.query(
+    `SELECT m.id, m.text, m.created_at, m.agent_name, u.username, g.slug AS group_slug, g.name AS group_name
+       FROM messages m JOIN users u ON u.id = m.user_id JOIN groups g ON g.id = m.group_id
+      WHERE m.kind = 'checkpoint' ORDER BY m.id DESC LIMIT 10`,
+  )).rows;
+  const storage = await storageCheckOnce().catch(() => null);
+  res.json({
+    metrics: { users, groups, messages, checkpoints, openReports, unreviewedFlags, frozen, suspended },
+    groups: groupList,
+    users: userList,
+    recentCheckpoints,
+    health: {
+      classifier: classifierConfigured(),
+      backups: backupsConfigured(),
+      storage,
+    },
+  });
+}));
+
 // --- groups ----------------------------------------------------------------
 
 app.get('/api/feed', ah(async (_req, res) => res.json({ groups: await publicFeed() })));
@@ -648,6 +708,29 @@ app.post('/api/groups/:slug/join', requireUser, ah(async (req, res) => {
     return res.status(403).json({ error: 'group is private — ask an admin for an invite' });
   }
   res.json({ membership: await joinGroup(group.id, req.user.id) });
+}));
+
+// Leaving is always allowed EXCEPT for the sole admin of a group — a group
+// with members but no admin would be unmanageable (nobody could moderate,
+// invite, or post checkpoints).
+app.post('/api/groups/:slug/leave', requireUser, ah(async (req, res) => {
+  const group = await getGroupBySlug(req.params.slug);
+  if (!group) return res.status(404).json({ error: 'no such group' });
+  const membership = await getMembership(group.id, req.user.id);
+  if (!membership) return res.status(400).json({ error: 'not a member' });
+  if (membership.role === 'admin') {
+    const admins = await pool.query(
+      "SELECT COUNT(*)::int AS n FROM memberships WHERE group_id = $1 AND role = 'admin'", [group.id],
+    );
+    const others = await pool.query(
+      'SELECT COUNT(*)::int AS n FROM memberships WHERE group_id = $1', [group.id],
+    );
+    if (admins.rows[0].n === 1 && others.rows[0].n > 1) {
+      return res.status(400).json({ error: 'promote another member to admin before leaving' });
+    }
+  }
+  await pool.query('DELETE FROM memberships WHERE group_id = $1 AND user_id = $2', [group.id, req.user.id]);
+  res.json({ ok: true });
 }));
 
 // --- messages --------------------------------------------------------------

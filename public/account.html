@@ -1,0 +1,271 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>BuildHall Account</title>
+  <meta name="description" content="BuildHall user account settings mockup.">
+  <meta name="theme-color" content="#0A2540">
+  <link rel="stylesheet" href="/variables.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: var(--bh-navy-950, #041424);
+      --panel: color-mix(in srgb, var(--bh-navy-900, #0A2540) 78%, black);
+      --panel-2: color-mix(in srgb, var(--bh-navy-800, #12395f) 58%, black);
+      --line: rgba(248,250,252,.12);
+      --line-hot: rgba(245,165,36,.34);
+      --ink: var(--bh-slate-50, #f8fafc);
+      --muted: var(--bh-slate-300, #cbd5e1);
+      --soft: var(--bh-slate-400, #94a3b8);
+      --hot: var(--bh-amber-500, #f5a524);
+      --hot-soft: var(--bh-amber-100, #fef3c7);
+      --radius: 8px;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-width: 320px;
+      min-height: 100vh;
+      background: radial-gradient(circle at 18% -5%, rgba(245,165,36,.15), transparent 28rem), var(--bg);
+      color: var(--ink);
+      font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    a { color: inherit; text-decoration: none; }
+    button, input, select { font: inherit; }
+    button { cursor: pointer; }
+    h1, h2, h3 { margin: 0; font-family: "Space Grotesk", Inter, sans-serif; letter-spacing: 0; }
+
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+      padding: 12px clamp(14px, 3vw, 28px);
+      border-bottom: 1px solid var(--line);
+      background: color-mix(in srgb, var(--bg) 88%, transparent);
+      backdrop-filter: blur(18px);
+    }
+
+    .brand, .nav {
+      display: flex;
+      align-items: center;
+      gap: 11px;
+    }
+
+    .brand img { height: 28px; width: auto; }
+    .brand span { font-family: "Space Grotesk", Inter, sans-serif; font-size: 21px; font-weight: 800; }
+    .nav { flex-wrap: wrap; justify-content: flex-end; color: var(--muted); font-weight: 850; font-size: 14px; }
+    .nav a:hover { color: var(--hot-soft); }
+
+    .shell {
+      width: min(1180px, calc(100% - 28px));
+      margin: 0 auto;
+      padding: 28px 0 48px;
+      display: grid;
+      gap: 16px;
+    }
+
+    .hero {
+      display: grid;
+      gap: 16px;
+      padding: clamp(22px, 5vw, 42px);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: linear-gradient(135deg, rgba(18,57,95,.72), rgba(4,20,36,.9));
+    }
+
+    .hero h1 { font-size: clamp(36px, 8vw, 72px); line-height: .94; }
+    .hero p { max-width: 780px; margin: 0; color: var(--muted); line-height: 1.55; }
+
+    .grid {
+      display: grid;
+      gap: 16px;
+    }
+
+    .card {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: rgba(255,255,255,.035);
+      overflow: hidden;
+    }
+
+    .card-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 16px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .card-head h2 { font-size: 20px; }
+    .hint { color: var(--soft); font-size: 12px; font-weight: 850; text-transform: uppercase; }
+    .card-body { padding: 16px; display: grid; gap: 14px; }
+
+    .profile {
+      display: grid;
+      grid-template-columns: 58px 1fr;
+      gap: 14px;
+      align-items: center;
+    }
+
+    .avatar {
+      width: 58px;
+      height: 58px;
+      display: grid;
+      place-items: center;
+      border-radius: 14px;
+      background: rgba(245,165,36,.14);
+      color: var(--hot);
+      font-weight: 950;
+      font-size: 20px;
+    }
+
+    .row {
+      display: grid;
+      gap: 6px;
+    }
+
+    label { color: var(--soft); font-size: 12px; font-weight: 850; text-transform: uppercase; }
+    input, select {
+      width: 100%;
+      min-height: 42px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 0 12px;
+      background: rgba(0,0,0,.12);
+      color: var(--ink);
+    }
+
+    .pill-list { display: flex; flex-wrap: wrap; gap: 8px; }
+    .pill {
+      padding: 7px 10px;
+      border: 1px solid var(--line-hot);
+      border-radius: 999px;
+      background: rgba(245,165,36,.08);
+      color: var(--hot-soft);
+      font-size: 13px;
+      font-weight: 850;
+    }
+
+    .status {
+      display: grid;
+      gap: 10px;
+    }
+
+    .status-item {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      color: var(--muted);
+      font-weight: 750;
+    }
+
+    .btn {
+      width: fit-content;
+      min-height: 42px;
+      padding: 0 14px;
+      border: 1px solid var(--line-hot);
+      border-radius: var(--radius);
+      background: linear-gradient(135deg, var(--hot), var(--bh-amber-600, #d97706));
+      color: var(--bh-navy-950, #041424);
+      font-weight: 950;
+    }
+
+    @media (min-width: 900px) {
+      .grid { grid-template-columns: 1.1fr .9fr; align-items: start; }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/home" aria-label="BuildHall home">
+      <img src="/buildhall-mark-white.svg" data-local-src="buildhall-mark-white.svg" alt="" onerror="if(!this.dataset.triedLocal){this.dataset.triedLocal='1';this.src=this.dataset.localSrc}else{this.style.display='none'}">
+      <span>BuildHall</span>
+    </a>
+    <nav class="nav" aria-label="Account navigation">
+      <a href="/home">Home</a>
+      <a href="/admin">Admin</a>
+      <a href="/?w=1">Open app</a>
+    </nav>
+  </header>
+
+  <main class="shell">
+    <section class="hero">
+      <span class="hint">Account center</span>
+      <h1>Your BuildHall command seat.</h1>
+      <p>Manage identity, interests, group membership, AI Bridge status, and local agent preferences. All placeholder values are marked for API integration.</p>
+    </section>
+
+    <div class="grid">
+      <section class="card">
+        <div class="card-head"><h2>Profile</h2><span class="hint">User</span></div>
+        <div class="card-body">
+          <!-- SLOT: user profile summary renders here -->
+          <div class="profile" data-slot="user-profile">
+            <div class="avatar">AR</div>
+            <div>
+              <h3>Ari Raman</h3>
+              <p style="margin:6px 0 0;color:var(--muted)">Builder, instructor, and AI coding workflow lead.</p>
+            </div>
+          </div>
+          <div class="row"><label for="name">Display name</label><input id="name" data-slot="user-display-name" value="Ari Raman"></div>
+          <div class="row"><label for="email">Email</label><input id="email" data-slot="user-email" value="ari@buildhall.example"></div>
+          <div class="row"><label for="role">Primary role</label><select id="role" data-slot="user-role"><option>Team lead</option><option>Teacher</option><option>Researcher</option><option>Student</option></select></div>
+          <button class="btn">Save profile</button>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="card-head"><h2>AI Bridge</h2><span class="hint">Local</span></div>
+        <div class="card-body">
+          <!-- SLOT: ai bridge installation and pairing status renders here -->
+          <div class="status" data-slot="bridge-status">
+            <div class="status-item"><span>Bridge</span><strong>Installed</strong></div>
+            <div class="status-item"><span>Last paired</span><strong>2 minutes ago</strong></div>
+            <div class="status-item"><span>Keys</span><strong>Stay local</strong></div>
+            <div class="status-item"><span>Default agent</span><strong>Codex</strong></div>
+          </div>
+          <button class="btn">Download AI Bridge</button>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="card-head"><h2>Interests</h2><span class="hint">Recommendations</span></div>
+        <div class="card-body">
+          <!-- SLOT: interest tags used for suggested public groups render here -->
+          <div class="pill-list" data-slot="user-interests">
+            <span class="pill">AI coding</span><span class="pill">Chemistry</span><span class="pill">Deep tech</span><span class="pill">Economics</span><span class="pill">Teaching</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="card-head"><h2>Memberships</h2><span class="hint">Groups</span></div>
+        <div class="card-body">
+          <!-- SLOT: account group memberships render here -->
+          <div class="status" data-slot="account-memberships">
+            <div class="status-item"><span>Agent Studio</span><strong>Admin</strong></div>
+            <div class="status-item"><span>School Build Lab</span><strong>Admin</strong></div>
+            <div class="status-item"><span>Air Taxi Stack</span><strong>Member</strong></div>
+          </div>
+        </div>
+      </section>
+    </div>
+  </main>
+  <script src="/shell.js"></script>
+  <script src="/account.js"></script>
+</body>
+</html>

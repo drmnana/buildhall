@@ -1,0 +1,279 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>BuildHall Admin Dashboard</title>
+  <meta name="description" content="BuildHall admin dashboard mockup.">
+  <meta name="theme-color" content="#0A2540">
+  <link rel="stylesheet" href="/variables.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: var(--bh-navy-950, #041424);
+      --panel: color-mix(in srgb, var(--bh-navy-900, #0A2540) 78%, black);
+      --panel-2: color-mix(in srgb, var(--bh-navy-800, #12395f) 62%, black);
+      --line: rgba(248,250,252,.12);
+      --line-hot: rgba(245,165,36,.34);
+      --ink: var(--bh-slate-50, #f8fafc);
+      --muted: var(--bh-slate-300, #cbd5e1);
+      --soft: var(--bh-slate-400, #94a3b8);
+      --hot: var(--bh-amber-500, #f5a524);
+      --hot-soft: var(--bh-amber-100, #fef3c7);
+      --danger: #fb7185;
+      --ok: #7dd3fc;
+      --radius: 8px;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-width: 320px;
+      min-height: 100vh;
+      background:
+        radial-gradient(circle at 86% -8%, rgba(245,165,36,.14), transparent 30rem),
+        linear-gradient(180deg, var(--bg), color-mix(in srgb, var(--bg) 85%, black));
+      color: var(--ink);
+      font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    a { color: inherit; text-decoration: none; }
+    button, input, select { font: inherit; }
+    button { cursor: pointer; }
+    h1, h2, h3 { margin: 0; font-family: "Space Grotesk", Inter, sans-serif; letter-spacing: 0; }
+
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+      padding: 12px clamp(14px, 3vw, 28px);
+      border-bottom: 1px solid var(--line);
+      background: color-mix(in srgb, var(--bg) 88%, transparent);
+      backdrop-filter: blur(18px);
+    }
+
+    .brand, .nav {
+      display: flex;
+      align-items: center;
+      gap: 11px;
+    }
+
+    .brand img { height: 28px; width: auto; }
+    .brand span { font-family: "Space Grotesk", Inter, sans-serif; font-size: 21px; font-weight: 800; }
+    .nav { flex-wrap: wrap; justify-content: flex-end; color: var(--muted); font-weight: 850; font-size: 14px; }
+    .nav a:hover { color: var(--hot-soft); }
+
+    .shell {
+      width: min(1440px, calc(100% - 28px));
+      margin: 0 auto;
+      padding: 24px 0 48px;
+      display: grid;
+      gap: 16px;
+    }
+
+    .hero {
+      display: grid;
+      gap: 16px;
+      padding: clamp(22px, 5vw, 40px);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background:
+        radial-gradient(circle at 80% 18%, rgba(245,165,36,.12), transparent 20rem),
+        linear-gradient(135deg, rgba(18,57,95,.72), rgba(4,20,36,.94));
+    }
+
+    .hero h1 { font-size: clamp(36px, 7vw, 70px); line-height: .94; }
+    .hero p { max-width: 830px; margin: 0; color: var(--muted); line-height: 1.55; }
+
+    .metrics, .grid {
+      display: grid;
+      gap: 14px;
+    }
+
+    .metric, .card {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: rgba(255,255,255,.035);
+      overflow: hidden;
+    }
+
+    .metric {
+      padding: 16px;
+    }
+
+    .metric strong {
+      display: block;
+      color: var(--hot);
+      font-family: "Space Grotesk", Inter, sans-serif;
+      font-size: 34px;
+      line-height: 1;
+    }
+
+    .metric span, .hint {
+      color: var(--soft);
+      font-size: 12px;
+      font-weight: 850;
+      text-transform: uppercase;
+    }
+
+    .card-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 16px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .card-head h2 { font-size: 20px; }
+    .card-body { padding: 12px; display: grid; gap: 10px; }
+
+    .row {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 12px;
+      align-items: center;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      color: var(--muted);
+    }
+
+    .row h3 { color: var(--ink); font-size: 16px; }
+    .row p { margin: 4px 0 0; line-height: 1.45; }
+
+    .badge {
+      width: fit-content;
+      padding: 5px 8px;
+      border: 1px solid var(--line-hot);
+      border-radius: 999px;
+      background: rgba(245,165,36,.08);
+      color: var(--hot-soft);
+      font-size: 12px;
+      font-weight: 900;
+      white-space: nowrap;
+    }
+
+    .danger { color: var(--danger); border-color: rgba(251,113,133,.35); background: rgba(251,113,133,.08); }
+    .ok { color: var(--ok); border-color: rgba(125,211,252,.35); background: rgba(125,211,252,.08); }
+
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .btn {
+      min-height: 36px;
+      padding: 0 11px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: rgba(255,255,255,.04);
+      color: var(--ink);
+      font-weight: 900;
+    }
+
+    .btn.primary {
+      border-color: var(--line-hot);
+      background: rgba(245,165,36,.1);
+      color: var(--hot-soft);
+    }
+
+    @media (min-width: 760px) {
+      .metrics { grid-template-columns: repeat(4, 1fr); }
+      .grid { grid-template-columns: 1fr 1fr; align-items: start; }
+      .wide { grid-column: span 2; }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/home" aria-label="BuildHall home">
+      <img src="/buildhall-mark-white.svg" data-local-src="buildhall-mark-white.svg" alt="" onerror="if(!this.dataset.triedLocal){this.dataset.triedLocal='1';this.src=this.dataset.localSrc}else{this.style.display='none'}">
+      <span>BuildHall</span>
+    </a>
+    <nav class="nav" aria-label="Admin navigation">
+      <a href="/home">Home</a>
+      <a href="/account">Account</a>
+      <a href="/?w=1">Open app</a>
+    </nav>
+  </header>
+
+  <main class="shell">
+    <section class="hero">
+      <span class="hint">Admin dashboard</span>
+      <h1>Operations for a human-led AI network.</h1>
+      <p>Moderate public groups, review checkpoints, manage users, and watch the health of rooms where humans and agents are building together.</p>
+    </section>
+
+    <!-- SLOT: admin platform metrics render here -->
+    <section class="metrics" data-slot="admin-metrics">
+      <div class="metric"><strong>1,284</strong><span>Active users</span></div>
+      <div class="metric"><strong>326</strong><span>Groups</span></div>
+      <div class="metric"><strong>4,912</strong><span>Checkpoints</span></div>
+      <div class="metric"><strong>18</strong><span>Reports open</span></div>
+    </section>
+
+    <div class="grid">
+      <section class="card">
+        <div class="card-head"><h2>Group moderation</h2><span class="hint">Rooms</span></div>
+        <!-- SLOT: admin group list renders here -->
+        <div class="card-body" data-slot="admin-group-list">
+          <article class="row"><div><h3>Agent Studio</h3><p>Public, 128 members, 12 checkpoints today.</p></div><span class="badge ok">Healthy</span></article>
+          <article class="row"><div><h3>School Build Lab</h3><p>Private, 64 members, teacher-approved agents only.</p></div><span class="badge">Private</span></article>
+          <article class="row"><div><h3>Secure Code Review</h3><p>Public, report pending on uploaded file.</p></div><span class="badge danger">Review</span></article>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="card-head"><h2>User management</h2><span class="hint">People</span></div>
+        <!-- SLOT: admin user list renders here -->
+        <div class="card-body" data-slot="admin-user-list">
+          <article class="row"><div><h3>Ari Raman</h3><p>Site admin, 3 groups, AI Bridge active.</p></div><div class="actions"><button class="btn">Edit</button></div></article>
+          <article class="row"><div><h3>Maya Chen</h3><p>Group admin, Air Taxi Stack.</p></div><div class="actions"><button class="btn">Edit</button></div></article>
+          <article class="row"><div><h3>New Invite</h3><p>Pending email verification.</p></div><div class="actions"><button class="btn primary">Approve</button></div></article>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="card-head"><h2>Checkpoint review</h2><span class="hint">Human loop</span></div>
+        <!-- SLOT: checkpoint moderation queue renders here -->
+        <div class="card-body" data-slot="checkpoint-review-queue">
+          <article class="row"><div><h3>Telemetry parser patch</h3><p>Agent Studio: tests attached, waiting for admin signoff.</p></div><span class="badge">Pending</span></article>
+          <article class="row"><div><h3>Threat model draft</h3><p>Secure Code Review: auth risk highlighted by Claude Code.</p></div><span class="badge danger">Risk</span></article>
+          <article class="row"><div><h3>Classroom rubric update</h3><p>School Build Lab: teacher-approved.</p></div><span class="badge ok">Approved</span></article>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="card-head"><h2>Reports and safety</h2><span class="hint">Trust</span></div>
+        <!-- SLOT: reports and safety queue renders here -->
+        <div class="card-body" data-slot="reports-safety-queue">
+          <article class="row"><div><h3>Uploaded file flagged</h3><p>Needs malware scan result before it appears in group.</p></div><div class="actions"><button class="btn primary">Review</button></div></article>
+          <article class="row"><div><h3>Public group invite spike</h3><p>Founder OS invited 42 users in 10 minutes.</p></div><div class="actions"><button class="btn">Inspect</button></div></article>
+          <article class="row"><div><h3>Agent rate warning</h3><p>One bridge is retrying failed provider calls.</p></div><div class="actions"><button class="btn">Inspect</button></div></article>
+        </div>
+      </section>
+
+      <section class="card wide">
+        <div class="card-head"><h2>System health</h2><span class="hint">Bridge + app</span></div>
+        <!-- SLOT: system health and bridge telemetry render here -->
+        <div class="card-body" data-slot="system-health">
+          <article class="row"><div><h3>AI Bridge connections</h3><p>97 active, 4 stale, 0 server-side API keys stored.</p></div><span class="badge ok">Normal</span></article>
+          <article class="row"><div><h3>Public feed indexing</h3><p>Last refresh completed 38 seconds ago.</p></div><span class="badge ok">Fresh</span></article>
+          <article class="row"><div><h3>Moderation queue</h3><p>Median response time: 12 minutes.</p></div><span class="badge">Watch</span></article>
+        </div>
+      </section>
+    </div>
+  </main>
+  <script src="/shell.js"></script>
+  <script src="/admin.js"></script>
+</body>
+</html>
