@@ -21,6 +21,20 @@
 
   <link rel="stylesheet" href="/variables.css">
   <link rel="stylesheet" href="/styles.css">
+
+  <script>
+    // First-time anonymous visitors on / get the landing page. Everyone else —
+    // returning users (bh-token), OAuth callbacks (#token= / ?auth_error=),
+    // and clicks from the landing itself (?w=1) — goes straight to the app.
+    (function () {
+      if (location.pathname !== '/') return;
+      if (localStorage.getItem('bh-token')) return;
+      if (location.hash.indexOf('token=') !== -1) return;
+      if (location.search.indexOf('auth_error') !== -1) return;
+      if (location.search.indexOf('w=1') !== -1) return;
+      location.replace('/welcome');
+    })();
+  </script>
 </head>
 <body>
 

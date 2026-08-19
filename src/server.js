@@ -121,6 +121,12 @@ for (const p of ['/verify', '/reset', '/pair']) {
   app.get(p, (_req, res) => res.sendFile(path.join(__dirname, '..', 'public', 'index.html')));
 }
 
+// Marketing landing page. The app stays at / (OAuth callbacks and the SPA's
+// history handling depend on it); index.html bounces fresh anonymous visitors
+// here client-side, and ?w=1 marks "came from the landing" to prevent loops.
+app.get('/welcome', (_req, res) => res.sendFile(path.join(__dirname, '..', 'public', 'landing.html')));
+app.get('/og-image.png', (_req, res) => res.sendFile(path.join(__dirname, '..', 'brand', 'og-image-1200x630.png')));
+
 app.use(express.static(path.join(__dirname, '..', 'public')));
 
 // Brand assets are served straight from brand/ (read-only originals from the
