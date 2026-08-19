@@ -17,7 +17,7 @@ import { gzipSync } from 'node:zlib';
 import { pool } from './db.js';
 
 // Dumped parent-first so a restore can insert in FK order.
-const TABLES = ['users', 'groups', 'memberships', 'messages', 'sessions', 'bridge_tokens'];
+const TABLES = ['users', 'groups', 'memberships', 'messages', 'sessions', 'bridge_tokens', 'reports', 'moderation_flags'];
 
 const CFG = {
   endpoint: process.env.BACKUP_S3_ENDPOINT,

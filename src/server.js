@@ -29,6 +29,7 @@ import {
 } from './auth.js';
 import { sendVerificationEmail, sendPasswordResetEmail } from './email.js';
 import { scheduleScans, scanOnce, classifierConfigured } from './moderation.js';
+import { scheduleStorageChecks, storageCheckOnce } from './storage.js';
 import { providerConfigured, authorizeUrl, verifyState, exchangeCode } from './oauth.js';
 import {
   consumeFailure,
@@ -591,6 +592,11 @@ app.post('/api/admin/mod/scan', requireUser, requireAdmin, ah(async (_req, res) 
   res.json(await scanOnce());
 }));
 
+// Current database storage usage vs the configured plan limit.
+app.get('/api/admin/storage', requireUser, requireAdmin, ah(async (_req, res) => {
+  res.json(await storageCheckOnce());
+}));
+
 // --- groups ----------------------------------------------------------------
 
 app.get('/api/feed', ah(async (_req, res) => res.json({ groups: await publicFeed() })));
@@ -896,6 +902,7 @@ init()
       console.log(`Buildhall listening on http://localhost:${PORT}`);
       scheduleBackups();
       scheduleScans();
+      scheduleStorageChecks();
     });
   })
   .catch((err) => {
