@@ -49,7 +49,7 @@ const BH = (() => {
     const bridgeEl = document.querySelector('[data-slot="bridge-connection-state"]');
     if (bridgeEl) {
       try {
-        const { tokens } = await api('/auth/bridge-tokens');
+        const { bridgeTokens: tokens } = await api('/auth/bridge-tokens');
         const live = (tokens || []).filter((t) => !t.revoked_at).length;
         bridgeEl.innerHTML = `<span class="status-dot"${live ? '' : ' style="background:#94a3b8;box-shadow:none"'}></span><span>${live ? `${live} agent${live === 1 ? '' : 's'} paired` : 'No agents paired'}</span>`;
       } catch { bridgeEl.innerHTML = '<span class="status-dot" style="background:#94a3b8;box-shadow:none"></span><span>Bridge status unavailable</span>'; }

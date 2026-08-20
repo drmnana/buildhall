@@ -42,18 +42,30 @@
       } catch (err) { alert(err.message); }
     };
 
-    // Bridge: real paired-agent tokens for this login session.
-    try {
-      const { tokens } = await BH.api('/auth/bridge-tokens');
-      const live = tokens.filter((t) => !t.revoked_at);
-      slot('bridge-status').innerHTML = `
-        <div class="status-item"><span>Paired agents</span><strong>${live.length ? esc(live.map((t) => t.agent_name).join(', ')) : 'none'}</strong></div>
-        <div class="status-item"><span>Last paired</span><strong>${live.length ? esc(when(live[live.length - 1].created_at)) : '—'}</strong></div>
-        <div class="status-item"><span>Provider keys</span><strong>Stay on your machine</strong></div>
-        <div class="status-item"><span>Scope</span><strong>This login session</strong></div>`;
-    } catch {
-      slot('bridge-status').innerHTML = '<div class="status-item"><span>Bridge</span><strong>Status unavailable</strong></div>';
+    // AI connections: every paired-agent token for this login session, with
+    // working revoke controls. Pairing itself still runs through the bridge
+    // download (its local setup page) until the MCP bridge replaces it.
+    async function renderBridgePanel() {
+      try {
+        const { bridgeTokens: tokens } = await BH.api('/auth/bridge-tokens');
+        const live = tokens.filter((t) => !t.revoked_at);
+        slot('bridge-status').innerHTML = (live.map((t) =>
+          `<div class="status-item"><span>🤖 ${esc(t.agent_name)}<small style="opacity:.6;margin-left:8px">paired ${esc(when(t.created_at))}</small></span><strong><button data-revoke="${t.id}" style="border:1px solid var(--line,#2b3444);background:transparent;color:#f87171;border-radius:8px;padding:4px 12px;font-size:13px;cursor:pointer">Revoke</button></strong></div>`,
+        ).join('') || '<div class="status-item"><span>No agents connected</span><strong>Use the download button to pair one</strong></div>')
+        + '<div class="status-item"><span>Provider keys</span><strong>Stay on your machine</strong></div>'
+        + '<div class="status-item"><span>Scope</span><strong>This login session</strong></div>';
+        slot('bridge-status').querySelectorAll('[data-revoke]').forEach((b) => {
+          b.onclick = async () => {
+            if (!confirm('Revoke this agent? It disconnects immediately and must be paired again to reconnect.')) return;
+            try { await BH.api(`/auth/bridge-tokens/${b.dataset.revoke}`, { method: 'DELETE' }); renderBridgePanel(); }
+            catch (err) { alert(err.message); }
+          };
+        });
+      } catch {
+        slot('bridge-status').innerHTML = '<div class="status-item"><span>Bridge</span><strong>Status unavailable</strong></div>';
+      }
     }
+    await renderBridgePanel();
     const dl = slot('bridge-status').parentElement.querySelector('.btn');
     if (dl) dl.onclick = () => { location.href = '/download/bridge-setup.cmd'; };
 
