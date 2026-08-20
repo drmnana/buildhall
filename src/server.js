@@ -421,7 +421,7 @@ app.post('/api/auth/logout', requireUser, requireSessionToken, ah(async (req, re
 // --- bridge tokens (agent/connector credentials) ---------------------------
 
 app.get('/api/auth/bridge-tokens', requireUser, requireSessionToken, ah(async (req, res) => {
-  res.json({ bridgeTokens: await listBridgeTokens(req.identity.sessionId) });
+  res.json({ bridgeTokens: await listBridgeTokens(req.user.id) });
 }));
 
 app.post('/api/auth/bridge-tokens', requireUser, requireSessionToken, ah(async (req, res) => {
@@ -442,8 +442,8 @@ app.post('/api/auth/bridge-tokens', requireUser, requireSessionToken, ah(async (
 app.delete('/api/auth/bridge-tokens/:id', requireUser, requireSessionToken, ah(async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: 'invalid bridge token id' });
-  if (!(await revokeBridgeToken(req.identity.sessionId, id))) {
-    return res.status(404).json({ error: 'no such live bridge token on this session' });
+  if (!(await revokeBridgeToken(req.user.id, id))) {
+    return res.status(404).json({ error: 'no such live bridge token' });
   }
   res.json({ ok: true, closedConnections: closeSocketsForBridgeToken(id) });
 }));

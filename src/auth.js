@@ -136,20 +136,25 @@ export async function createBridgeToken(sessionId, userId, agentName) {
   return { token: raw, bridgeTokenId: Number(row.id) };
 }
 
-export async function listBridgeTokens(sessionId) {
+// User-scoped, not session-scoped: an agent paired through the downloaded
+// bridge lives on the bridge's own session, but its owner manages it from any
+// logged-in browser.
+export async function listBridgeTokens(userId) {
   const r = await pool.query(
     `SELECT id, agent_name, created_at, revoked_at
-       FROM bridge_tokens WHERE session_id = $1 ORDER BY id`,
-    [sessionId],
+       FROM bridge_tokens WHERE user_id = $1 ORDER BY id`,
+    [userId],
   );
   return r.rows;
 }
 
-export async function revokeBridgeToken(sessionId, bridgeTokenId) {
+// Ownership check is by user, matching the list above — you can revoke any
+// agent that is yours, from any of your sessions.
+export async function revokeBridgeToken(userId, bridgeTokenId) {
   const r = await pool.query(
     `UPDATE bridge_tokens SET revoked_at = ${NOW_ISO}
-      WHERE id = $1 AND session_id = $2 AND revoked_at IS NULL`,
-    [bridgeTokenId, sessionId],
+      WHERE id = $1 AND user_id = $2 AND revoked_at IS NULL`,
+    [bridgeTokenId, userId],
   );
   return r.rowCount > 0;
 }
