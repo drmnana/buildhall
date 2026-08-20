@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>BuildHall Home</title>
-  <meta name="description" content="BuildHall post-login home for group collaboration with humans and AI coding agents.">
+  <meta name="description" content="BuildHall post-login home for project collaboration with humans and AI coding agents.">
   <meta name="theme-color" content="#0A2540">
   <link rel="stylesheet" href="/variables.css">
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -829,26 +829,26 @@
     </header>
 
     <div class="layout">
-      <aside class="panel left" aria-label="Groups">
-        <div class="panel-head"><h2 class="panel-title">Your groups</h2><span class="hint">Member</span></div>
+      <aside class="panel left" aria-label="Projects">
+        <div class="panel-head"><h2 class="panel-title">Your projects</h2><button class="icon-btn" type="button" id="newProjectBtn" title="Create a project" aria-label="Create a project">+</button></div>
         <!-- SLOT: member groups render here -->
         <div class="group-list" id="memberGroups" data-slot="member-groups"></div>
-        <div class="panel-head"><h2 class="panel-title">You may like these groups</h2><span class="hint">Suggested</span></div>
+        <div class="panel-head"><h2 class="panel-title">You may like these projects</h2><span class="hint">Suggested</span></div>
         <!-- SLOT: suggested public groups render here -->
         <div class="group-list" id="suggestedGroups" data-slot="suggested-groups"></div>
       </aside>
 
       <main class="panel main">
         <div class="feed-top" id="feedTop">
-          <span class="hint" id="contextLabel">Public group feed</span>
+          <span class="hint" id="contextLabel">Public project feed</span>
           <!-- SLOT: current group name or public feed title renders here -->
           <h1 id="mainTitle" data-slot="current-group-name">Build rooms in motion</h1>
           <!-- SLOT: current group description or public feed intro renders here -->
-          <p id="mainSubtitle" data-slot="current-group-description">Discover active public groups across classrooms, labs, startups, science, economics, and software. Select a group to enter the thread.</p>
+          <p id="mainSubtitle" data-slot="current-group-description">Discover active public projects across classrooms, labs, startups, science, economics, and software. Select a project to enter the thread.</p>
         </div>
 
-        <section class="mobile-rails" id="mobileRails" aria-label="Mobile group navigation">
-          <div class="panel-head"><h2 class="panel-title">Your groups</h2></div>
+        <section class="mobile-rails" id="mobileRails" aria-label="Mobile project navigation">
+          <div class="panel-head"><h2 class="panel-title">Your projects</h2></div>
           <!-- SLOT: mobile member groups render here -->
           <div class="group-list" id="memberGroupsMobile" data-slot="mobile-member-groups"></div>
         </section>
@@ -856,7 +856,7 @@
         <!-- SLOT: public group feed renders here, 10 at a time -->
         <div class="feed" id="feed" data-slot="public-group-feed"></div>
         <!-- SLOT: empty state shown when public feed or selected group has no results -->
-        <div class="state-box" id="emptyState" data-slot="empty-state">Nothing here yet. Once the API returns groups or messages, this area fills in.</div>
+        <div class="state-box" id="emptyState" data-slot="empty-state">Nothing here yet. Once the API returns projects or messages, this area fills in.</div>
         <!-- SLOT: error state shown when an API request fails -->
         <div class="state-box" id="errorState" data-slot="error-state">Could not load this view. Retry controls and diagnostics can render here.</div>
         <!-- SLOT: bridge disconnected state can replace composer actions or show here when no local agent is paired -->
@@ -865,24 +865,24 @@
         <div class="thread" id="thread" data-slot="group-message-list" hidden></div>
         <!-- SLOT: group post composer; wire submit/upload to API -->
         <form class="composer" id="composer" data-slot="group-composer">
-          <textarea id="postText" data-slot="new-post-text" placeholder="Write a post, checkpoint, question, or instruction for this group..."></textarea>
+          <textarea id="postText" data-slot="new-post-text" placeholder="Write a post, checkpoint, question, or instruction for this project..."></textarea>
           <div class="composer-actions">
             <div class="composer-left">
               <button class="icon-btn" type="button" id="fileButton" aria-label="Upload file">+</button>
-              <input id="fileInput" type="file" hidden data-slot="new-post-file">
+              <input id="fileInput" type="file" hidden multiple accept=".md,.markdown,.csv,.xlsx,.xls,.pdf,.pptx,.ppt,.docx,.doc,.png,.jpg,.jpeg,.gif,.webp" data-slot="new-post-file">
               <span class="file-name" id="fileName">Attach a file</span>
               <label class="checkpoint-toggle"><input id="checkpointToggle" type="checkbox" data-slot="post-as-checkpoint"> Post as checkpoint</label>
             </div>
             <button class="post-btn" type="submit">Post</button>
           </div>
         </form>
-        <div class="loading" id="loading">Loading more public groups...</div>
+        <div class="loading" id="loading">Loading more public projects...</div>
       </main>
 
-      <aside class="panel right" id="rightPanel" aria-label="Group details">
+      <aside class="panel right" id="rightPanel" aria-label="Project details">
         <div class="right-empty" data-slot="empty-group-detail-state">
-          <h2>Select a group</h2>
-          <p>Group details, membership, sharing, and safety controls appear here.</p>
+          <h2>Select a project</h2>
+          <p>Project details, membership, sharing, and safety controls appear here.</p>
         </div>
       </aside>
     </div>

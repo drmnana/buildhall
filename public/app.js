@@ -226,7 +226,7 @@ async function loadFeed() {
     const foot = post.querySelector('.post-foot');
     const openBtn = document.createElement('button');
     openBtn.className = 'btn small';
-    openBtn.textContent = joined ? 'Open' : 'Join group';
+    openBtn.textContent = joined ? 'Open' : 'Join project';
     openBtn.addEventListener('click', async () => {
       try {
         if (!joined) await api(`/groups/${g.slug}/join`, { method: 'POST' });
@@ -234,7 +234,7 @@ async function loadFeed() {
         // Always open the row from /api/groups — it carries the numeric id the
         // websocket needs, which the feed projection does not include.
         const full = myGroups.find((m) => m.slug === g.slug);
-        if (!full) throw new Error('joined, but the group did not appear in your list');
+        if (!full) throw new Error('joined, but the project did not appear in your list');
         selectGroup(full);
       } catch (err) { alert(err.message); }
     });
@@ -475,7 +475,7 @@ async function loadAdminQueue() {
   // this is the only place they're visible.
   for (const g of frozen) {
     box.append(adminCard({
-      title: `Frozen group: ${escapeHtml(g.name)}`,
+      title: `Frozen project: ${escapeHtml(g.name)}`,
       meta: `${escapeHtml(g.slug)} · frozen ${new Date(g.frozen_at).toLocaleString()}`,
       text: '<span class="muted">Readable by members, but nobody can post.</span>',
       buttons: [['Unfreeze', () => api(`/admin/mod/groups/${g.slug}/unfreeze`, { method: 'POST' }), true]],
@@ -499,7 +499,7 @@ async function loadAdminQueue() {
       buttons: [
         ['Dismiss', () => api(`/admin/mod/reports/${r.id}/resolve`, { method: 'POST', body: JSON.stringify({ status: 'dismissed' }) })],
         ['Mark actioned', () => api(`/admin/mod/reports/${r.id}/resolve`, { method: 'POST', body: JSON.stringify({ status: 'actioned' }) }), true],
-        ['Freeze group', () => confirm(`Freeze group ${r.group_slug}? Nobody can post until unfrozen.`) && api(`/admin/mod/groups/${r.group_slug}/freeze`, { method: 'POST' })],
+        ['Freeze project', () => confirm(`Freeze group ${r.group_slug}? Nobody can post until unfrozen.`) && api(`/admin/mod/groups/${r.group_slug}/freeze`, { method: 'POST' })],
         ...(r.author ? [[`Suspend ${r.author}`, () => confirm(`Suspend ${r.author}? All their sessions and agents disconnect immediately.`) && api(`/admin/mod/users/${r.author}/suspend`, { method: 'POST' })]] : []),
       ],
     }));
@@ -512,7 +512,7 @@ async function loadAdminQueue() {
       buttons: [
         ['Mark reviewed', () => api(`/admin/mod/flags/${f.id}/review`, { method: 'POST' }), true],
         [`Suspend ${f.author}`, () => confirm(`Suspend ${f.author}? All their sessions and agents disconnect immediately.`) && api(`/admin/mod/users/${f.author}/suspend`, { method: 'POST' })],
-        ['Freeze group', () => confirm(`Freeze group ${f.group_slug}?`) && api(`/admin/mod/groups/${f.group_slug}/freeze`, { method: 'POST' })],
+        ['Freeze project', () => confirm(`Freeze group ${f.group_slug}?`) && api(`/admin/mod/groups/${f.group_slug}/freeze`, { method: 'POST' })],
       ],
     }));
   }

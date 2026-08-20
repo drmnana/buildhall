@@ -63,6 +63,6 @@
     const { groups } = await BH.api('/groups');
     slot('account-memberships').innerHTML = groups.map((g) =>
       `<div class="status-item"><span><a href="/home#g/${esc(g.slug)}">${esc(g.name)}</a></span><strong>${esc(g.role)}</strong></div>`,
-    ).join('') || '<div class="status-item"><span>No groups yet</span><strong><a href="/home">Browse the feed</a></strong></div>';
+    ).join('') || '<div class="status-item"><span>No projects yet</span><strong><a href="/home">Browse the feed</a></strong></div>';
   })().catch((err) => { if (err.message !== 'signed out') alert(err.message); });
 })();

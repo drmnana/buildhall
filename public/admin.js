@@ -18,15 +18,53 @@
     el.querySelectorAll('[data-act]').forEach((b) => {
       const [verb, arg] = b.dataset.act.split('|');
       b.onclick = () => act(() => {
-        if (verb === 'freeze') { if (!confirm(`Freeze group ${arg}?`)) throw new Error('cancelled'); return BH.api(`/admin/mod/groups/${arg}/freeze`, { method: 'POST' }); }
+        if (verb === 'freeze') { if (!confirm(`Freeze project ${arg}?`)) throw new Error('cancelled'); return BH.api(`/admin/mod/groups/${arg}/freeze`, { method: 'POST' }); }
         if (verb === 'unfreeze') return BH.api(`/admin/mod/groups/${arg}/unfreeze`, { method: 'POST' });
         if (verb === 'suspend') { if (!confirm(`Suspend ${arg}? All their sessions and agents disconnect.`)) throw new Error('cancelled'); return BH.api(`/admin/mod/users/${arg}/suspend`, { method: 'POST' }); }
         if (verb === 'unsuspend') return BH.api(`/admin/mod/users/${arg}/unsuspend`, { method: 'POST' });
         if (verb === 'dismiss') return BH.api(`/admin/mod/reports/${arg}/resolve`, { method: 'POST', body: JSON.stringify({ status: 'dismissed' }) });
         if (verb === 'action') return BH.api(`/admin/mod/reports/${arg}/resolve`, { method: 'POST', body: JSON.stringify({ status: 'actioned' }) });
         if (verb === 'review') return BH.api(`/admin/mod/flags/${arg}/review`, { method: 'POST' });
+        if (verb === 'restore') return BH.api(`/admin/mod/groups/${arg}/restore`, { method: 'POST' });
       });
     });
+  }
+
+  function groupRow(g) {
+    const sub = `${esc(g.slug)}${g.id ? ` · id ${g.id}` : ''} · ${esc(g.visibility)}, ${g.member_count} members, ${g.message_count} messages`;
+    let actions;
+    if (g.deleted_at) {
+      actions = `<div class="actions"><span class="badge danger">Deleted</span><button class="btn" data-act="restore|${esc(g.slug)}">Restore</button></div>`;
+    } else if (g.frozen_at) {
+      actions = `<div class="actions"><span class="badge danger">Frozen${g.frozen_by === 'group_admin' ? ' (by project admin)' : ''}</span><button class="btn" data-act="unfreeze|${esc(g.slug)}">Unfreeze</button></div>`;
+    } else {
+      actions = `<div class="actions"><span class="badge ok">Healthy</span><button class="btn" data-act="freeze|${esc(g.slug)}">Freeze</button></div>`;
+    }
+    return row(esc(g.name), sub, actions);
+  }
+
+  function renderGroups(groups) {
+    const gl = slot('admin-group-list');
+    gl.innerHTML = groups.map(groupRow).join('') || row('No projects found', '');
+    wire(gl);
+  }
+
+  // Search any project by name, slug, or id — results replace the recent list;
+  // clearing the box brings it back. Report rows call searchFor(slug) to jump
+  // straight from a report to the project's controls.
+  let lastOverviewGroups = [];
+  let searchTimer = null;
+  async function runSearch(q) {
+    if (!q) return renderGroups(lastOverviewGroups);
+    try {
+      const { groups } = await BH.api(`/admin/groups?q=${encodeURIComponent(q)}`);
+      renderGroups(groups);
+    } catch (err) { alert(err.message); }
+  }
+  function searchFor(slug) {
+    const box = document.getElementById('groupSearch');
+    if (box) { box.value = slug; box.scrollIntoView({ behavior: 'smooth', block: 'center' }); }
+    runSearch(slug);
   }
 
   async function load() {
@@ -34,24 +72,23 @@
     const m = ov.metrics;
 
     slot('admin-metrics').innerHTML = [
-      [m.users, 'Users'], [m.groups, 'Groups'], [m.checkpoints, 'Checkpoints'],
+      [m.users, 'Users'], [m.groups, 'Projects'], [m.checkpoints, 'Checkpoints'],
       [m.openReports + m.unreviewedFlags, 'Open reports + flags'],
     ].map(([n, label]) => `<div class="metric"><strong>${n}</strong><span>${label}</span></div>`).join('');
 
-    const gl = slot('admin-group-list');
-    gl.innerHTML = ov.groups.map((g) => row(
-      esc(g.name),
-      `${esc(g.visibility)}, ${g.member_count} members, ${g.message_count} messages`,
-      g.frozen_at
-        ? `<div class="actions"><span class="badge danger">Frozen</span><button class="btn" data-act="unfreeze|${esc(g.slug)}">Unfreeze</button></div>`
-        : `<div class="actions"><span class="badge ok">Healthy</span><button class="btn" data-act="freeze|${esc(g.slug)}">Freeze</button></div>`,
-    )).join('') || row('No groups yet', '');
-    wire(gl);
+    lastOverviewGroups = ov.groups;
+    const sq = document.getElementById('groupSearch');
+    if (sq && !sq.dataset.wired) {
+      sq.dataset.wired = '1';
+      sq.oninput = () => { clearTimeout(searchTimer); searchTimer = setTimeout(() => runSearch(sq.value.trim()), 250); };
+    }
+    if (sq?.value.trim()) runSearch(sq.value.trim());
+    else renderGroups(ov.groups);
 
     const ul = slot('admin-user-list');
     ul.innerHTML = ov.users.map((u) => row(
       esc(u.display_name || u.username),
-      `@${esc(u.username)}, ${u.group_count} group${u.group_count === 1 ? '' : 's'}, joined ${esc(when(u.created_at))}`,
+      `@${esc(u.username)}, ${u.group_count} project${u.group_count === 1 ? '' : 's'}, joined ${esc(when(u.created_at))}`,
       u.suspended_at
         ? `<div class="actions"><span class="badge danger">Suspended</span><button class="btn" data-act="unsuspend|${esc(u.username)}">Unsuspend</button></div>`
         : `<div class="actions"><button class="btn" data-act="suspend|${esc(u.username)}">Suspend</button></div>`,
@@ -62,22 +99,23 @@
       esc(String(c.text).slice(0, 80)),
       `${esc(c.group_name)} · ${esc(c.agent_name || c.username)} · ${esc(when(c.created_at))}`,
       '<span class="badge ok">Posted</span>',
-    )).join('') || row('No checkpoints yet', 'Checkpoints posted in groups appear here.');
+    )).join('') || row('No checkpoints yet', 'Checkpoints posted in projects appear here.');
 
     const rq = slot('reports-safety-queue');
     rq.innerHTML = [
       ...queue.reports.map((r) => row(
         `Report: ${esc(r.reason)}`,
-        `${esc(r.group_slug)} · by ${esc(r.reporter)} · ${esc(String(r.message_text || '(group-level)').slice(0, 90))}`,
+        `<a href=\"#find\" data-find=\"${esc(r.group_slug)}\">${esc(r.group_slug)}</a> · by ${esc(r.reporter)} · ${esc(String(r.message_text || '(project-level)').slice(0, 90))}`,
         `<div class="actions"><button class="btn" data-act="dismiss|${r.id}">Dismiss</button><button class="btn primary" data-act="action|${r.id}">Actioned</button></div>`,
       )),
       ...queue.flags.map((f) => row(
         `Flag: ${esc(f.category)} (${esc(f.severity)})`,
-        `${esc(f.group_slug)} · ${esc(String(f.message_text).slice(0, 90))}`,
+        `<a href=\"#find\" data-find=\"${esc(f.group_slug)}\">${esc(f.group_slug)}</a> · ${esc(String(f.message_text).slice(0, 90))}`,
         `<div class="actions"><button class="btn primary" data-act="review|${f.id}">Mark reviewed</button></div>`,
       )),
     ].join('') || row('Queue is clear', 'User reports and classifier flags land here.', '<span class="badge ok">Clear</span>');
     wire(rq);
+    rq.querySelectorAll('[data-find]').forEach((a) => { a.onclick = (e) => { e.preventDefault(); searchFor(a.dataset.find); }; });
 
     const st = ov.health.storage;
     slot('system-health').innerHTML = [
@@ -87,7 +125,7 @@
         ov.health.classifier ? '<span class="badge ok">On</span>' : '<span class="badge">Off</span>'),
       row('Off-box backups', ov.health.backups ? 'Nightly snapshot to S3' : 'Not configured',
         ov.health.backups ? '<span class="badge ok">On</span>' : '<span class="badge danger">Off</span>'),
-      row('Enforcement', `${m.frozen} frozen group${m.frozen === 1 ? '' : 's'}, ${m.suspended} suspended user${m.suspended === 1 ? '' : 's'}`,
+      row('Enforcement', `${m.frozen} frozen project${m.frozen === 1 ? '' : 's'}, ${m.suspended} suspended user${m.suspended === 1 ? '' : 's'}`,
         m.frozen + m.suspended === 0 ? '<span class="badge ok">None</span>' : '<span class="badge">Active</span>'),
     ].join('');
   }

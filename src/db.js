@@ -209,6 +209,30 @@ CREATE TABLE IF NOT EXISTS pairings (
   expires_at    TEXT NOT NULL,
   claimed_at    TEXT
 );
+
+-- Project lifecycle (users see "project"; the schema keeps its original
+-- "group" names — display name and internal name are deliberately different).
+-- frozen_by records WHO froze: 'moderation' (site admin / kill switch) or
+-- 'group_admin' (the project's own admin). A project admin cannot undo a
+-- moderation freeze. deleted_at is a soft delete: hidden everywhere, data
+-- retained, restorable by a site admin.
+ALTER TABLE groups ADD COLUMN IF NOT EXISTS frozen_by TEXT;
+ALTER TABLE groups ADD COLUMN IF NOT EXISTS deleted_at TEXT;
+
+-- File attachments on messages. Bytes live in Postgres for now (simple, one
+-- store, already backed up); migrate to S3 when the storage monitor shows
+-- real growth. Types are allowlisted and each file is capped at 10 MB in the
+-- route, not here.
+CREATE TABLE IF NOT EXISTS message_attachments (
+  id           BIGSERIAL PRIMARY KEY,
+  message_id   BIGINT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+  filename     TEXT NOT NULL,
+  content_type TEXT NOT NULL,
+  size_bytes   INTEGER NOT NULL,
+  data         BYTEA NOT NULL,
+  created_at   TEXT NOT NULL DEFAULT ${NOW_ISO}
+);
+CREATE INDEX IF NOT EXISTS idx_attachments_message ON message_attachments (message_id);
 `;
 
 // Create the schema. Idempotent; call once at boot before serving.
@@ -310,6 +334,11 @@ export async function createGroup({ slug, name, description, goal, visibility, c
 }
 
 export async function getGroupBySlug(slug) {
+  return one('SELECT * FROM groups WHERE slug = $1 AND deleted_at IS NULL', [slug]);
+}
+
+// Includes soft-deleted projects — for site-admin restore only.
+export async function getGroupBySlugAny(slug) {
   return one('SELECT * FROM groups WHERE slug = $1', [slug]);
 }
 
@@ -321,7 +350,7 @@ export async function listGroupsForUser(userId) {
   return many(
     `SELECT g.*, m.role FROM groups g
      JOIN memberships m ON m.group_id = g.id
-     WHERE m.user_id = $1
+     WHERE m.user_id = $1 AND g.deleted_at IS NULL
      ORDER BY g.created_at DESC`,
     [userId],
   );
@@ -352,6 +381,73 @@ export async function addMessage({ groupId, userId, actorType, agentName, kind, 
      )
      SELECT ins.*, u.username, u.display_name FROM ins JOIN users u ON u.id = ins.user_id`,
     [groupId, userId, actorType, agentName ?? null, kind ?? 'message', pinnedMessageId ?? null, text],
+  );
+}
+
+// Message + its attachments in one transaction, so a failed file insert never
+// leaves a message silently missing the files the author thought they sent.
+// files: [{ filename, contentType, sizeBytes, data (Buffer) }]
+export async function addMessageWithAttachments(fields, files) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const { rows } = await client.query(
+      `WITH ins AS (
+         INSERT INTO messages (group_id, user_id, actor_type, agent_name, kind, pinned_message_id, text)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
+         RETURNING *
+       )
+       SELECT ins.*, u.username, u.display_name FROM ins JOIN users u ON u.id = ins.user_id`,
+      [fields.groupId, fields.userId, fields.actorType, fields.agentName ?? null,
+       fields.kind ?? 'message', fields.pinnedMessageId ?? null, fields.text],
+    );
+    const message = rows[0];
+    const attachments = [];
+    for (const f of files) {
+      const a = await client.query(
+        `INSERT INTO message_attachments (message_id, filename, content_type, size_bytes, data)
+         VALUES ($1, $2, $3, $4, $5) RETURNING id, filename, content_type, size_bytes`,
+        [message.id, f.filename, f.contentType, f.sizeBytes, f.data],
+      );
+      attachments.push(a.rows[0]);
+    }
+    await client.query('COMMIT');
+    message.attachments = attachments;
+    return message;
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+// Merge attachment metadata (never the bytes) into a page of messages.
+export async function attachAttachmentMeta(messages) {
+  const ids = messages.map((m) => m.id);
+  if (!ids.length) return messages;
+  const rows = await many(
+    `SELECT id, message_id, filename, content_type, size_bytes
+       FROM message_attachments WHERE message_id = ANY($1) ORDER BY id`,
+    [ids],
+  );
+  if (rows.length) {
+    const byMsg = new Map();
+    for (const r of rows) {
+      if (!byMsg.has(r.message_id)) byMsg.set(r.message_id, []);
+      byMsg.get(r.message_id).push({ id: r.id, filename: r.filename, content_type: r.content_type, size_bytes: r.size_bytes });
+    }
+    for (const m of messages) if (byMsg.has(m.id)) m.attachments = byMsg.get(m.id);
+  }
+  return messages;
+}
+
+export async function getAttachmentInGroup(groupId, attachmentId) {
+  return one(
+    `SELECT a.* FROM message_attachments a
+     JOIN messages m ON m.id = a.message_id
+     WHERE a.id = $1 AND m.group_id = $2`,
+    [attachmentId, groupId],
   );
 }
 
@@ -435,7 +531,7 @@ export async function publicFeed(limit = 50) {
             (SELECT MAX(created_at) FROM messages ms
               WHERE ms.group_id = g.id) AS last_activity_at
      FROM groups g
-     WHERE g.visibility = 'public'
+     WHERE g.visibility = 'public' AND g.deleted_at IS NULL
      ORDER BY last_activity_at DESC NULLS LAST
      LIMIT $1`,
     [limit],

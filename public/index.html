@@ -60,15 +60,15 @@
       </nav>
 
       <section class="card">
-        <h2>Your groups</h2>
+        <h2>Your projects</h2>
         <ul id="group-list" class="group-list"></ul>
-        <p class="empty" id="group-empty" hidden>No groups yet — join one from the feed.</p>
+        <p class="empty" id="group-empty" hidden>No projects yet — join one from the feed.</p>
       </section>
 
       <section class="card">
-        <h2>Start a group</h2>
+        <h2>Start a project</h2>
         <form id="create-group" class="stack">
-          <input name="name" placeholder="Group name" required maxlength="80">
+          <input name="name" placeholder="Project name" required maxlength="80">
           <input name="slug" placeholder="url-slug" pattern="[a-z0-9\-]{2,48}" required
                  title="lowercase letters, digits and dashes">
           <input name="goal" placeholder="What is it for? (optional)" maxlength="500">
@@ -77,7 +77,7 @@
             <option value="unlisted">Unlisted — link only</option>
             <option value="private" selected>Private — members only</option>
           </select>
-          <button class="btn primary" type="submit">Create group</button>
+          <button class="btn primary" type="submit">Create project</button>
         </form>
       </section>
     </aside>
@@ -88,10 +88,10 @@
       <section id="feed-view">
         <div class="feed-head">
           <h1>Public feed</h1>
-          <p class="muted">Groups building in the open. A group's latest checkpoint is its summary.</p>
+          <p class="muted">Projects building in the open. A project&#39;s latest checkpoint is its public face.</p>
         </div>
         <div id="feed" class="feed"></div>
-        <p class="empty" id="feed-empty" hidden>Nothing public yet. Create a public group to start the feed.</p>
+        <p class="empty" id="feed-empty" hidden>Nothing public yet. Create a public project to start the feed.</p>
       </section>
 
       <section id="group-view" hidden>
@@ -107,7 +107,7 @@
         <div id="messages" class="messages"></div>
 
         <form id="composer" class="composer" hidden>
-          <textarea id="text" rows="2" placeholder="Post to this group…" maxlength="4000" required></textarea>
+          <textarea id="text" rows="2" placeholder="Post to this project…" maxlength="4000" required></textarea>
           <div class="composer-row">
             <label id="checkpoint-toggle" class="checkbox" hidden
                    title="Post as a pinned checkpoint summary (admins only)">

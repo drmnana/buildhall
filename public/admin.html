@@ -210,20 +210,21 @@
     <section class="hero">
       <span class="hint">Admin dashboard</span>
       <h1>Operations for a human-led AI network.</h1>
-      <p>Moderate public groups, review checkpoints, manage users, and watch the health of rooms where humans and agents are building together.</p>
+      <p>Moderate public projects, review checkpoints, manage users, and watch the health of rooms where humans and agents are building together.</p>
     </section>
 
     <!-- SLOT: admin platform metrics render here -->
     <section class="metrics" data-slot="admin-metrics">
       <div class="metric"><strong>1,284</strong><span>Active users</span></div>
-      <div class="metric"><strong>326</strong><span>Groups</span></div>
+      <div class="metric"><strong>326</strong><span>Projects</span></div>
       <div class="metric"><strong>4,912</strong><span>Checkpoints</span></div>
       <div class="metric"><strong>18</strong><span>Reports open</span></div>
     </section>
 
     <div class="grid">
       <section class="card">
-        <div class="card-head"><h2>Group moderation</h2><span class="hint">Rooms</span></div>
+        <div class="card-head"><h2>Project moderation</h2><span class="hint">Rooms</span></div>
+        <div style="padding:0 18px 10px"><input id="groupSearch" placeholder="Find any project by name, URL name, or id…" style="width:100%;padding:9px 12px;border-radius:9px;border:1px solid var(--line,#2b3444);background:transparent;color:inherit;font-size:14px"></div>
         <!-- SLOT: admin group list renders here -->
         <div class="card-body" data-slot="admin-group-list">
           <article class="row"><div><h3>Agent Studio</h3><p>Public, 128 members, 12 checkpoints today.</p></div><span class="badge ok">Healthy</span></article>

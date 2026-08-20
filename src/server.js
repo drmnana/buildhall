@@ -54,6 +54,10 @@ import {
   getMessageInGroup,
   listMessages,
   lastMessages,
+  addMessageWithAttachments,
+  attachAttachmentMeta,
+  getAttachmentInGroup,
+  getGroupBySlugAny,
   listCheckpoints,
   publicFeed,
   getUser,
@@ -80,6 +84,9 @@ const app = express();
 // which the auth rate limiter keys on. Without this every request would share
 // a single key and one attacker would lock out everyone.
 app.set('trust proxy', 1);
+// Attachments ride the message POST as base64 JSON (no multipart, no new
+// deps). Only project routes accept big bodies; everything else stays small.
+app.use('/api/groups', express.json({ limit: '60mb' }));
 app.use(express.json({ limit: '256kb' }));
 
 // --- health check ----------------------------------------------------------
@@ -605,15 +612,31 @@ app.post('/api/admin/mod/users/:username/unsuspend', requireUser, requireAdmin, 
   res.json({ ok: true });
 }));
 
+// A moderation freeze outranks a project-admin freeze: taking over an
+// existing group_admin freeze is allowed (frozen_by flips to 'moderation'),
+// and only moderation can lift it afterwards.
 app.post('/api/admin/mod/groups/:slug/freeze', requireUser, requireAdmin, ah(async (req, res) => {
-  const r = await pool.query(`UPDATE groups SET frozen_at = ${NOW_ISO} WHERE slug = $1 AND frozen_at IS NULL RETURNING slug`, [String(req.params.slug)]);
-  if (!r.rows[0]) return res.status(404).json({ error: 'no such unfrozen group' });
+  const r = await pool.query(
+    `UPDATE groups SET frozen_at = COALESCE(frozen_at, ${NOW_ISO}), frozen_by = 'moderation'
+      WHERE slug = $1 AND (frozen_at IS NULL OR frozen_by = 'group_admin') RETURNING slug`,
+    [String(req.params.slug)],
+  );
+  if (!r.rows[0]) return res.status(404).json({ error: 'no such unfrozen project' });
   res.json({ ok: true });
 }));
 
 app.post('/api/admin/mod/groups/:slug/unfreeze', requireUser, requireAdmin, ah(async (req, res) => {
-  const r = await pool.query('UPDATE groups SET frozen_at = NULL WHERE slug = $1 AND frozen_at IS NOT NULL RETURNING slug', [String(req.params.slug)]);
-  if (!r.rows[0]) return res.status(404).json({ error: 'no such frozen group' });
+  const r = await pool.query('UPDATE groups SET frozen_at = NULL, frozen_by = NULL WHERE slug = $1 AND frozen_at IS NOT NULL RETURNING slug', [String(req.params.slug)]);
+  if (!r.rows[0]) return res.status(404).json({ error: 'no such frozen project' });
+  res.json({ ok: true });
+}));
+
+// Undo a project admin's soft delete. Site admins only — the delete itself
+// lives on the project routes below.
+app.post('/api/admin/mod/groups/:slug/restore', requireUser, requireAdmin, ah(async (req, res) => {
+  const group = await getGroupBySlugAny(String(req.params.slug));
+  if (!group || !group.deleted_at) return res.status(404).json({ error: 'no such deleted project' });
+  await pool.query('UPDATE groups SET deleted_at = NULL WHERE id = $1', [group.id]);
   res.json({ ok: true });
 }));
 
@@ -642,7 +665,7 @@ app.get('/api/admin/overview', requireUser, requireAdmin, ah(async (_req, res) =
     one('SELECT COUNT(*)::int AS n FROM users WHERE suspended_at IS NOT NULL'),
   ]);
   const groupList = (await pool.query(
-    `SELECT g.slug, g.name, g.visibility, g.frozen_at,
+    `SELECT g.slug, g.name, g.visibility, g.frozen_at, g.frozen_by, g.deleted_at,
             (SELECT COUNT(*)::int FROM memberships m WHERE m.group_id = g.id) AS member_count,
             (SELECT COUNT(*)::int FROM messages ms WHERE ms.group_id = g.id) AS message_count
        FROM groups g ORDER BY g.created_at DESC LIMIT 25`,
@@ -669,6 +692,26 @@ app.get('/api/admin/overview', requireUser, requireAdmin, ah(async (_req, res) =
       storage,
     },
   });
+}));
+
+// Find any project by slug, name, or exact id — the moderation path from
+// "someone reported project X" to its freeze/restore controls at any scale.
+// Includes frozen and soft-deleted projects; that's the point.
+app.get('/api/admin/groups', requireUser, requireAdmin, ah(async (req, res) => {
+  const q = String(req.query.q || '').trim().slice(0, 80);
+  if (!q) return res.json({ groups: [] });
+  const like = `%${q.replace(/[%_\\]/g, '\\$&')}%`;
+  const id = /^\d+$/.test(q) ? Number(q) : -1;
+  const groups = (await pool.query(
+    `SELECT g.id, g.slug, g.name, g.visibility, g.frozen_at, g.frozen_by, g.deleted_at,
+            (SELECT COUNT(*)::int FROM memberships m WHERE m.group_id = g.id) AS member_count,
+            (SELECT COUNT(*)::int FROM messages ms WHERE ms.group_id = g.id) AS message_count
+       FROM groups g
+      WHERE g.slug ILIKE $1 OR g.name ILIKE $1 OR g.id = $2
+      ORDER BY g.created_at DESC LIMIT 25`,
+    [like, id],
+  )).rows;
+  res.json({ groups });
 }));
 
 // --- groups ----------------------------------------------------------------
@@ -703,9 +746,9 @@ app.post('/api/groups', requireUser, ah(async (req, res) => {
 
 app.post('/api/groups/:slug/join', requireUser, ah(async (req, res) => {
   const group = await getGroupBySlug(req.params.slug);
-  if (!group) return res.status(404).json({ error: 'no such group' });
+  if (!group) return res.status(404).json({ error: 'no such project' });
   if (group.visibility === 'private' && !(await getMembership(group.id, req.user.id))) {
-    return res.status(403).json({ error: 'group is private — ask an admin for an invite' });
+    return res.status(403).json({ error: 'this project is private — ask an admin for an invite' });
   }
   res.json({ membership: await joinGroup(group.id, req.user.id) });
 }));
@@ -715,7 +758,7 @@ app.post('/api/groups/:slug/join', requireUser, ah(async (req, res) => {
 // invite, or post checkpoints).
 app.post('/api/groups/:slug/leave', requireUser, ah(async (req, res) => {
   const group = await getGroupBySlug(req.params.slug);
-  if (!group) return res.status(404).json({ error: 'no such group' });
+  if (!group) return res.status(404).json({ error: 'no such project' });
   const membership = await getMembership(group.id, req.user.id);
   if (!membership) return res.status(400).json({ error: 'not a member' });
   if (membership.role === 'admin') {
@@ -733,14 +776,68 @@ app.post('/api/groups/:slug/leave', requireUser, ah(async (req, res) => {
   res.json({ ok: true });
 }));
 
+// --- project-admin controls --------------------------------------------------
+// These act on the requester's OWN project (role=admin membership), unlike the
+// /api/admin/mod/* routes which are site-wide moderation.
+
+const requireGroupAdmin = ah(async (req, res, next) => {
+  const group = await getGroupBySlug(req.params.slug);
+  if (!group) return res.status(404).json({ error: 'no such project' });
+  const membership = await getMembership(group.id, req.user.id);
+  if (!membership || membership.role !== 'admin') {
+    return res.status(403).json({ error: 'project admins only' });
+  }
+  req.group = group;
+  req.membership = membership;
+  next();
+});
+
+// Kick a member. Admins can't be kicked (demote first — which doesn't exist
+// yet, so in practice admins are permanent); kicking yourself is just leave.
+app.delete('/api/groups/:slug/members/:username', requireUser, requireGroupAdmin, ah(async (req, res) => {
+  const target = await getUserByUsername(String(req.params.username));
+  if (!target) return res.status(404).json({ error: 'no such user' });
+  if (target.id === req.user.id) return res.status(400).json({ error: 'use leave to remove yourself' });
+  const membership = await getMembership(req.group.id, target.id);
+  if (!membership) return res.status(404).json({ error: 'not a member of this project' });
+  if (membership.role === 'admin') return res.status(403).json({ error: 'admins cannot be removed' });
+  await pool.query('DELETE FROM memberships WHERE group_id = $1 AND user_id = $2', [req.group.id, target.id]);
+  res.json({ ok: true });
+}));
+
+// Project-admin freeze: pauses posting (project stays readable). Cannot touch
+// a moderation freeze in either direction.
+app.post('/api/groups/:slug/freeze', requireUser, requireGroupAdmin, ah(async (req, res) => {
+  if (req.group.frozen_at) {
+    return res.status(req.group.frozen_by === 'moderation' ? 403 : 409)
+      .json({ error: req.group.frozen_by === 'moderation' ? 'frozen by site moderation' : 'already frozen' });
+  }
+  await pool.query(`UPDATE groups SET frozen_at = ${NOW_ISO}, frozen_by = 'group_admin' WHERE id = $1`, [req.group.id]);
+  res.json({ ok: true });
+}));
+
+app.post('/api/groups/:slug/unfreeze', requireUser, requireGroupAdmin, ah(async (req, res) => {
+  if (!req.group.frozen_at) return res.status(409).json({ error: 'not frozen' });
+  if (req.group.frozen_by === 'moderation') return res.status(403).json({ error: 'frozen by site moderation — contact support' });
+  await pool.query('UPDATE groups SET frozen_at = NULL, frozen_by = NULL WHERE id = $1', [req.group.id]);
+  res.json({ ok: true });
+}));
+
+// Soft delete: the project vanishes from the app for everyone but the data
+// stays (recoverable by a site admin via /api/admin/mod/groups/:slug/restore).
+app.delete('/api/groups/:slug', requireUser, requireGroupAdmin, ah(async (req, res) => {
+  await pool.query(`UPDATE groups SET deleted_at = ${NOW_ISO} WHERE id = $1`, [req.group.id]);
+  res.json({ ok: true });
+}));
+
 // --- messages --------------------------------------------------------------
 
 const requireMember = ah(async (req, res, next) => {
   const group = await getGroupBySlug(req.params.slug);
-  if (!group) return res.status(404).json({ error: 'no such group' });
+  if (!group) return res.status(404).json({ error: 'no such project' });
   const membership = await getMembership(group.id, req.user.id);
   if (!membership && group.visibility === 'private') {
-    return res.status(403).json({ error: 'not a member of this group' });
+    return res.status(403).json({ error: 'not a member of this project' });
   }
   req.group = group;
   req.membership = membership;
@@ -751,7 +848,7 @@ const requireMember = ah(async (req, res, next) => {
 app.post('/api/groups/:slug/messages/:id/report', requireUser, requireMember, ah(async (req, res) => {
   const messageId = Number(req.params.id);
   if (!Number.isInteger(messageId) || messageId <= 0) return res.status(400).json({ error: 'invalid message id' });
-  if (!(await getMessageInGroup(req.group.id, messageId))) return res.status(404).json({ error: 'no such message in this group' });
+  if (!(await getMessageInGroup(req.group.id, messageId))) return res.status(404).json({ error: 'no such message in this project' });
   const reason = String(req.body?.reason || '');
   if (!REPORT_REASONS.includes(reason)) return res.status(400).json({ error: `reason must be one of: ${REPORT_REASONS.join(', ')}` });
   const detail = String(req.body?.detail || '').slice(0, 1000);
@@ -782,9 +879,9 @@ app.get('/api/groups/:slug/messages', requireUser, requireMember, ah(async (req,
     return res.status(400).json({ error: 'after, before and limit must be non-negative integers' });
   }
   res.json({
-    messages: await listMessages(req.group.id, {
+    messages: await attachAttachmentMeta(await listMessages(req.group.id, {
       afterId, beforeId, limit: Math.min(Math.max(limit, 1), 200),
-    }),
+    })),
   });
 }));
 
@@ -822,15 +919,55 @@ app.get('/api/groups/:slug/context', requireUser, requireMember, ah(async (req, 
   const [checkpoint] = await listCheckpoints(req.group.id, 1);
   res.json({
     checkpoint: checkpoint ?? null,
-    messages: await lastMessages(req.group.id, limit),
+    messages: await attachAttachmentMeta(await lastMessages(req.group.id, limit)),
   });
 }));
 
+// Attachment rules. SVG is deliberately excluded (scriptable, XSS vector when
+// rendered); users can zip anything exotic. Both the extension and declared
+// content type must be allowlisted, and downloads are served with nosniff.
+const ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024;
+const ATTACHMENT_MAX_FILES = 4;
+const ATTACHMENT_EXTS = new Set(['md', 'markdown', 'csv', 'xlsx', 'xls', 'pdf', 'pptx', 'ppt', 'docx', 'doc', 'png', 'jpg', 'jpeg', 'gif', 'webp']);
+const ATTACHMENT_TYPES = new Set([
+  'text/markdown', 'text/plain', 'text/csv',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'application/vnd.ms-excel',
+  'application/pdf',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation', 'application/vnd.ms-powerpoint',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'application/msword',
+  'image/png', 'image/jpeg', 'image/gif', 'image/webp',
+  'application/octet-stream', // browsers send this for .md and friends
+]);
+
+function parseAttachmentUploads(rawFiles) {
+  if (rawFiles == null) return { files: [] };
+  if (!Array.isArray(rawFiles)) return { error: 'files must be an array' };
+  if (rawFiles.length > ATTACHMENT_MAX_FILES) return { error: `at most ${ATTACHMENT_MAX_FILES} files per message` };
+  const files = [];
+  for (const f of rawFiles) {
+    const filename = String(f?.name || '').trim().replace(/[\r\n"\\/]/g, '_').slice(0, 200);
+    const contentType = String(f?.type || 'application/octet-stream').toLowerCase().split(';')[0].trim();
+    const ext = filename.includes('.') ? filename.split('.').pop().toLowerCase() : '';
+    if (!filename || !ATTACHMENT_EXTS.has(ext)) {
+      return { error: `file type not allowed: "${filename || '(unnamed)'}" — allowed: ${[...ATTACHMENT_EXTS].join(', ')}` };
+    }
+    if (!ATTACHMENT_TYPES.has(contentType)) return { error: `content type not allowed: ${contentType}` };
+    let data;
+    try { data = Buffer.from(String(f?.data || ''), 'base64'); } catch { return { error: 'files[].data must be base64' }; }
+    if (!data.length) return { error: `empty file: ${filename}` };
+    if (data.length > ATTACHMENT_MAX_BYTES) return { error: `${filename} is over the 10 MB limit` };
+    files.push({ filename, contentType, sizeBytes: data.length, data });
+  }
+  return { files };
+}
+
 app.post('/api/groups/:slug/messages', requireUser, requireMember, ah(async (req, res) => {
-  if (!req.membership) return res.status(403).json({ error: 'join the group to post' });
-  // Frozen groups are readable (evidence stays visible) but accept no posts.
-  if (req.group.frozen_at) return res.status(403).json({ error: 'this group is frozen by moderation' });
-  const { kind, text, pinnedMessageId } = req.body ?? {};
+  if (!req.membership) return res.status(403).json({ error: 'join the project to post' });
+  // Frozen projects are readable (evidence stays visible) but accept no posts.
+  if (req.group.frozen_at) {
+    return res.status(403).json({ error: req.group.frozen_by === 'group_admin' ? 'this project is frozen by its admin' : 'this project is frozen by moderation' });
+  }
+  const { kind, text, pinnedMessageId, files: rawFiles } = req.body ?? {};
   // Attribution is derived from the credential, never from the request body.
   // A bridge token posts as its own agent; a login session posts as the human.
   // Neither can claim to be the other.
@@ -851,13 +988,18 @@ app.post('/api/groups/:slug/messages', requireUser, requireMember, ah(async (req
     }
     pinId = Number(pinnedMessageId);
     if (!Number.isInteger(pinId) || pinId <= 0 || !(await getMessageInGroup(req.group.id, pinId))) {
-      return res.status(400).json({ error: 'pinnedMessageId must reference a message in this group' });
+      return res.status(400).json({ error: 'pinnedMessageId must reference a message in this project' });
     }
   }
+  const parsed = parseAttachmentUploads(rawFiles);
+  if (parsed.error) return res.status(400).json({ error: parsed.error });
+  if (parsed.files.length && kind === 'checkpoint') {
+    return res.status(400).json({ error: 'checkpoints cannot carry attachments' });
+  }
   const body = String(text || '').trim();
-  if (!body) return res.status(400).json({ error: 'text is required' });
+  if (!body && !parsed.files.length) return res.status(400).json({ error: 'text is required' });
   if (body.length > 4000) return res.status(400).json({ error: 'text must be 4000 characters or fewer' });
-  const message = await addMessage({
+  const fields = {
     groupId: req.group.id,
     userId: req.user.id,
     actorType,
@@ -865,9 +1007,31 @@ app.post('/api/groups/:slug/messages', requireUser, requireMember, ah(async (req
     kind,
     text: body,
     pinnedMessageId: pinId,
-  });
+  };
+  const message = parsed.files.length
+    ? await addMessageWithAttachments(fields, parsed.files)
+    : await addMessage(fields);
   broadcast(req.group.id, { type: 'message', message });
   res.status(201).json({ message });
+}));
+
+// Attachment bytes. Same visibility rules as the messages themselves.
+// nosniff + a locked-down disposition keep a crafted file from executing in
+// the app's origin: images render inline (they're allowlisted raster types),
+// everything else downloads.
+app.get('/api/groups/:slug/attachments/:id', requireUser, requireMember, ah(async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: 'invalid attachment id' });
+  const att = await getAttachmentInGroup(req.group.id, id);
+  if (!att) return res.status(404).json({ error: 'no such attachment in this project' });
+  const inline = att.content_type.startsWith('image/');
+  res.set({
+    'Content-Type': att.content_type,
+    'X-Content-Type-Options': 'nosniff',
+    'Content-Disposition': `${inline ? 'inline' : 'attachment'}; filename="${att.filename}"`,
+    'Cache-Control': 'private, max-age=3600',
+  });
+  res.send(att.data);
 }));
 
 // --- error handler ----------------------------------------------------------
