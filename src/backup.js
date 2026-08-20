@@ -17,7 +17,10 @@ import { gzipSync } from 'node:zlib';
 import { pool } from './db.js';
 
 // Dumped parent-first so a restore can insert in FK order.
-const TABLES = ['users', 'groups', 'memberships', 'messages', 'sessions', 'bridge_tokens', 'reports', 'moderation_flags'];
+// identities: without them OAuth users cannot log in after a restore.
+// message_attachments: the file bytes themselves (bytea serializes as Buffer
+// JSON; gzip absorbs most of the bloat at current scale).
+const TABLES = ['users', 'identities', 'groups', 'memberships', 'messages', 'message_attachments', 'sessions', 'bridge_tokens', 'reports', 'moderation_flags'];
 
 const CFG = {
   endpoint: process.env.BACKUP_S3_ENDPOINT,

@@ -55,6 +55,14 @@ const BH = (() => {
       } catch { bridgeEl.innerHTML = '<span class="status-dot" style="background:#94a3b8;box-shadow:none"></span><span>Bridge status unavailable</span>'; }
     }
     document.querySelectorAll('a[href="#download-bridge"]').forEach((a) => { a.href = '/download/bridge-setup.cmd'; });
+    // OAuth signups get a guessed handle — nudge until they claim a real one.
+    if (me.user.username_locked === false && !document.getElementById('handleNudge') && location.pathname !== '/account') {
+      const bar = document.createElement('div');
+      bar.id = 'handleNudge';
+      bar.style.cssText = 'background:rgba(122,162,255,.14);border-bottom:1px solid var(--line,#2b3444);padding:8px 16px;text-align:center;font-size:14px';
+      bar.innerHTML = `Your handle "@${esc(me.user.username)}" was guessed from your sign-in provider. <a href="/account" style="font-weight:700">Pick your real handle</a> — it becomes permanent.`;
+      document.body.prepend(bar);
+    }
     return me;
   }
 

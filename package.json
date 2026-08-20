@@ -1,7 +1,7 @@
 {
   "name": "buildhall",
   "version": "0.1.0",
-  "description": "Buildhall — where people and their AIs build together. Cloud sync server for groups of human+AI pairs.",
+  "description": "Buildhall \u2014 where people and their AIs build together. Cloud sync server for groups of human+AI pairs.",
   "main": "src/server.js",
   "type": "module",
   "scripts": {
@@ -10,7 +10,8 @@
     "bridge": "node bridge/server.mjs",
     "connect": "node connector/buildhall-connect.mjs",
     "restore": "node scripts/restore-backup.mjs",
-    "migrate-sqlite": "node scripts/migrate-sqlite-to-pg.mjs"
+    "migrate-sqlite": "node scripts/migrate-sqlite-to-pg.mjs",
+    "test": "node --test tests/*.test.mjs"
   },
   "engines": {
     "node": ">=22.5"

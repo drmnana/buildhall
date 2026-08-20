@@ -34,13 +34,20 @@ const s3 = new S3Client({
 
 // Parent-first, matching the backup order, so FK references resolve on restore.
 const TABLES = {
-  users: ['id', 'username', 'display_name', 'password_hash', 'created_at'],
-  groups: ['id', 'slug', 'name', 'description', 'goal', 'visibility', 'created_by', 'created_at'],
+  users: ['id', 'username', 'display_name', 'email', 'email_verified', 'password_hash', 'created_at', 'suspended_at', 'aup_accepted_at', 'username_locked'],
+  identities: ['id', 'user_id', 'provider', 'provider_user_id', 'email', 'created_at'],
+  groups: ['id', 'slug', 'name', 'description', 'goal', 'visibility', 'created_by', 'created_at', 'frozen_at', 'frozen_by', 'deleted_at'],
   memberships: ['group_id', 'user_id', 'role', 'joined_at'],
-  messages: ['id', 'group_id', 'user_id', 'actor_type', 'agent_name', 'kind', 'pinned_message_id', 'text', 'created_at'],
+  messages: ['id', 'group_id', 'user_id', 'actor_type', 'agent_name', 'kind', 'pinned_message_id', 'text', 'created_at', 'mod_scanned_at'],
+  message_attachments: ['id', 'message_id', 'filename', 'content_type', 'size_bytes', 'data', 'created_at'],
   sessions: ['id', 'user_id', 'token_hash', 'created_at', 'expires_at', 'revoked_at'],
   bridge_tokens: ['id', 'session_id', 'user_id', 'agent_name', 'token_hash', 'created_at', 'revoked_at'],
+  reports: ['id', 'reporter_id', 'group_id', 'message_id', 'reason', 'detail', 'status', 'created_at', 'resolved_at', 'resolved_by', 'resolution_note'],
+  moderation_flags: ['id', 'message_id', 'source', 'category', 'severity', 'rationale', 'created_at', 'reviewed_at'],
 };
+
+// bytea round-trips through JSON as {type:'Buffer',data:[...]} — revive it.
+const revive = (v) => (v && typeof v === 'object' && v.type === 'Buffer' && Array.isArray(v.data) ? Buffer.from(v.data) : v);
 
 const [key, flag] = process.argv.slice(2);
 
@@ -61,6 +68,8 @@ console.log(`Downloaded ${key} (${gz.length} bytes gzip) — snapshot from ${sna
 const counts = Object.fromEntries(Object.entries(snap.tables || {}).map(([t, r]) => [t, r.length]));
 console.log('rows ->', JSON.stringify(counts));
 
+const OPTIONAL = new Set(['identities', 'message_attachments', 'reports', 'moderation_flags']);
+for (const t of OPTIONAL) if (!Array.isArray(snap.tables?.[t])) snap.tables[t] = [];
 const missing = Object.keys(TABLES).filter((t) => !Array.isArray(snap.tables?.[t]));
 if (missing.length) { console.error('INVALID snapshot — missing tables:', missing.join(', ')); process.exit(2); }
 
@@ -82,7 +91,7 @@ if (flag === '--restore') {
     await client.query('SET CONSTRAINTS ALL DEFERRED');
     for (const [table, cols] of Object.entries(TABLES)) {
       for (const row of snap.tables[table]) {
-        const values = cols.map((c) => (row[c] === undefined ? null : row[c]));
+        const values = cols.map((c) => (row[c] === undefined ? null : revive(row[c])));
         const ph = cols.map((_, i) => `$${i + 1}`).join(', ');
         await client.query(`INSERT INTO ${table} (${cols.join(', ')}) VALUES (${ph})`, values);
       }

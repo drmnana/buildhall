@@ -216,6 +216,11 @@ CREATE TABLE IF NOT EXISTS pairings (
 -- 'group_admin' (the project's own admin). A project admin cannot undo a
 -- moderation freeze. deleted_at is a soft delete: hidden everywhere, data
 -- retained, restorable by a site admin.
+-- OAuth signups get a handle derived from the provider's display name; the
+-- user may replace it ONCE (username_locked flips true). Email signups chose
+-- their handle, so they start locked.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS username_locked BOOLEAN NOT NULL DEFAULT TRUE;
+
 ALTER TABLE groups ADD COLUMN IF NOT EXISTS frozen_by TEXT;
 ALTER TABLE groups ADD COLUMN IF NOT EXISTS deleted_at TEXT;
 
@@ -270,11 +275,11 @@ export async function getUserByUsername(username) {
 // Create an account. password_hash may be null (OAuth-only). emailVerified is
 // true for OAuth signups (the provider vouches) and false for email signups
 // until the verification link is used.
-export async function createUser({ username, displayName, email, passwordHash = null, emailVerified = false }) {
+export async function createUser({ username, displayName, email, passwordHash = null, emailVerified = false, usernameLocked = true }) {
   return one(
-    `INSERT INTO users (username, display_name, email, password_hash, email_verified)
-     VALUES ($1, $2, $3, $4, $5) RETURNING *`,
-    [username, displayName ?? username, email ?? null, passwordHash, emailVerified],
+    `INSERT INTO users (username, display_name, email, password_hash, email_verified, username_locked)
+     VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+    [username, displayName ?? username, email ?? null, passwordHash, emailVerified, usernameLocked],
   );
 }
 

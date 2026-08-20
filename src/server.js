@@ -30,6 +30,7 @@ import {
 import { sendVerificationEmail, sendPasswordResetEmail } from './email.js';
 import { scheduleScans, scanOnce, classifierConfigured } from './moderation.js';
 import { scheduleStorageChecks, storageCheckOnce } from './storage.js';
+import { captureError, installProcessHandlers } from './alerts.js';
 import { providerConfigured, authorizeUrl, verifyState, exchangeCode } from './oauth.js';
 import {
   consumeFailure,
@@ -253,6 +254,9 @@ async function resolveOAuthUser(provider, profile) {
     email: profile.email.toLowerCase(),
     passwordHash: null,
     emailVerified: !!profile.emailVerified,
+    // the handle was guessed from the provider profile, not chosen — let the
+    // user replace it once (prevents another "oslonetwork")
+    usernameLocked: false,
   });
   await linkIdentity(user.id, provider, profile.providerUserId, profile.email);
   return user;
@@ -404,10 +408,72 @@ app.get('/api/auth/me', requireUser, (req, res) => {
 // Update own profile. Display name only for now — username is the public
 // handle agents are named after and email changes need re-verification.
 app.patch('/api/auth/me', requireUser, requireSessionToken, ah(async (req, res) => {
+  const wantsUsername = req.body?.username != null;
+  if (wantsUsername) {
+    // One-time handle pick for OAuth signups whose handle was derived, never
+    // chosen. Locked accounts can't rename — the handle is the public identity
+    // agents are named after.
+    if (req.user.username_locked) return res.status(403).json({ error: 'username is locked' });
+    const username = String(req.body.username).trim().toLowerCase();
+    if (!/^[a-z0-9_-]{2,32}$/.test(username)) {
+      return res.status(400).json({ error: 'username must be 2-32 chars: lowercase letters, digits, - or _' });
+    }
+    const taken = await getUserByUsername(username);
+    if (taken && Number(taken.id) !== Number(req.user.id)) return res.status(409).json({ error: 'username already taken' });
+    await pool.query('UPDATE users SET username = $1, username_locked = TRUE WHERE id = $2', [username, req.user.id]);
+    return res.json({ ok: true, username });
+  }
   const name = String(req.body?.displayName || '').trim();
   if (!name || name.length > 80) return res.status(400).json({ error: 'displayName must be 1-80 characters' });
   await pool.query('UPDATE users SET display_name = $1 WHERE id = $2', [name, req.user.id]);
   res.json({ ok: true, displayName: name });
+}));
+
+// Delete own account. Anonymizes rather than erases: messages keep their
+// rows (no holes in project threads) but the author becomes "deleted-<id>".
+// Refused while the user is the sole admin of a project that still has other
+// members — that project would become unmanageable; hand it off first.
+app.delete('/api/auth/me', requireUser, requireSessionToken, ah(async (req, res) => {
+  if (String(req.body?.confirm || '') !== req.user.username) {
+    return res.status(400).json({ error: 'confirm must be your exact username' });
+  }
+  const stuck = (await pool.query(
+    `SELECT g.slug FROM groups g
+      WHERE g.deleted_at IS NULL
+        AND (SELECT COUNT(*) FROM memberships m WHERE m.group_id = g.id AND m.role = 'admin') = 1
+        AND EXISTS (SELECT 1 FROM memberships m WHERE m.group_id = g.id AND m.user_id = $1 AND m.role = 'admin')
+        AND (SELECT COUNT(*) FROM memberships m WHERE m.group_id = g.id) > 1`,
+    [req.user.id],
+  )).rows;
+  if (stuck.length) {
+    return res.status(400).json({
+      error: `you are the only admin of: ${stuck.map((r) => r.slug).join(', ')} — promote another member or delete those projects first`,
+    });
+  }
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('DELETE FROM memberships WHERE user_id = $1', [req.user.id]);
+    await client.query('DELETE FROM identities WHERE user_id = $1', [req.user.id]);
+    await client.query('DELETE FROM auth_tokens WHERE user_id = $1', [req.user.id]);
+    await client.query(`UPDATE bridge_tokens SET revoked_at = ${NOW_ISO} WHERE user_id = $1 AND revoked_at IS NULL`, [req.user.id]);
+    await client.query(`UPDATE sessions SET revoked_at = ${NOW_ISO} WHERE user_id = $1 AND revoked_at IS NULL`, [req.user.id]);
+    await client.query(
+      `UPDATE users SET username = $2, display_name = 'Deleted user', email = NULL,
+              password_hash = NULL, email_verified = FALSE, suspended_at = ${NOW_ISO}
+        WHERE id = $1`,
+      [req.user.id, `deleted-${req.user.id}`],
+    );
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+  const sessions = (await pool.query('SELECT id FROM sessions WHERE user_id = $1', [req.user.id])).rows;
+  for (const sRow of sessions) closeSocketsForSession(Number(sRow.id));
+  res.json({ ok: true, deleted: true });
 }));
 
 app.post('/api/auth/logout', requireUser, requireSessionToken, ah(async (req, res) => {
@@ -1039,7 +1105,7 @@ app.get('/api/groups/:slug/attachments/:id', requireUser, requireMember, ah(asyn
 // real error server-side; return a generic 500 so internals never leak.
 // eslint-disable-next-line no-unused-vars
 app.use((err, req, res, next) => {
-  console.error('request error:', err);
+  captureError(`${req.method} ${req.path}`, err);
   if (res.headersSent) return;
   res.status(500).json({ error: 'internal error' });
 });
@@ -1184,6 +1250,7 @@ init()
       scheduleBackups();
       scheduleScans();
       scheduleStorageChecks();
+      installProcessHandlers();
     });
   })
   .catch((err) => {

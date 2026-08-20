@@ -24,15 +24,38 @@
     emailInput.readOnly = true;
     emailInput.title = 'Email changes require re-verification — not yet self-service.';
     // The role selector has no backend meaning; replace with the public handle.
+    // OAuth signups whose handle was derived from a provider profile may
+    // rename it ONCE; everyone else sees it read-only.
     const roleSel = slot('user-role');
     const handle = document.createElement('input');
-    handle.value = '@' + u.username;
-    handle.readOnly = true;
-    handle.title = 'Your public handle. Agents are named after it (e.g. "' + u.username + ' codex").';
     roleSel.replaceWith(handle);
-    document.querySelector('label[for="role"]').textContent = 'Public handle';
+    if (u.username_locked === false) {
+      handle.value = u.username;
+      handle.title = 'Pick your permanent public handle — you can set it once.';
+      document.querySelector('label[for="role"]').textContent = 'Public handle (pick once — this becomes permanent)';
+      const saveHandle = document.createElement('button');
+      saveHandle.type = 'button';
+      saveHandle.id = 'claimHandleBtn';
+      saveHandle.textContent = 'Claim handle';
+      saveHandle.className = 'btn';
+      saveHandle.style.marginTop = '8px';
+      handle.after(saveHandle);
+      saveHandle.onclick = async (e) => {
+        e.preventDefault();
+        if (!confirm(`Claim "${handle.value.trim().toLowerCase()}" as your permanent handle? This cannot be changed again, and your agents will be named after it.`)) return;
+        try {
+          const { username } = await BH.api('/auth/me', { method: 'PATCH', body: JSON.stringify({ username: handle.value.trim() }) });
+          location.reload();
+        } catch (err) { alert(err.message); }
+      };
+    } else {
+      handle.value = '@' + u.username;
+      handle.readOnly = true;
+      handle.title = 'Your public handle. Agents are named after it (e.g. "' + u.username + ' codex").';
+      document.querySelector('label[for="role"]').textContent = 'Public handle';
+    }
 
-    const saveBtn = document.querySelector('.card .btn');
+    const saveBtn = [...document.querySelectorAll('.card .btn')].find((b) => b.id !== 'claimHandleBtn');
     saveBtn.onclick = async () => {
       try {
         const { displayName } = await BH.api('/auth/me', { method: 'PATCH', body: JSON.stringify({ displayName: nameInput.value }) });
@@ -71,6 +94,27 @@
 
     // Interests power nothing yet — say so instead of showing fake tags.
     slot('user-interests').innerHTML = '<span class="pill" style="opacity:.6">Interest-based suggestions are coming soon</span>';
+
+    // Danger zone: delete account (anonymize — messages stay, identity goes).
+    const memCard = slot('account-memberships').closest('.card') || slot('account-memberships').parentElement;
+    const danger = document.createElement('section');
+    danger.className = 'card';
+    danger.innerHTML = `
+      <div class="card-head"><h2 style="color:#f87171">Danger zone</h2></div>
+      <div class="card-body">
+        <p style="color:var(--muted);font-size:14px">Deleting your account signs out every session, disconnects your agents, and removes your name from the platform. Messages you posted stay in their projects, attributed to "Deleted user". This cannot be undone.</p>
+        <button id="deleteAccountBtn" class="btn" style="color:#f87171;border-color:#f87171">Delete my account</button>
+      </div>`;
+    memCard.after(danger);
+    danger.querySelector('#deleteAccountBtn').onclick = async () => {
+      const typed = prompt(`This permanently deletes your account. Type your handle (${u.username}) to confirm:`);
+      if (typed === null) return;
+      try {
+        await BH.api('/auth/me', { method: 'DELETE', body: JSON.stringify({ confirm: typed.trim() }) });
+        localStorage.removeItem('bh-token');
+        location.replace('/welcome');
+      } catch (err) { alert(err.message); }
+    };
 
     const { groups } = await BH.api('/groups');
     slot('account-memberships').innerHTML = groups.map((g) =>
