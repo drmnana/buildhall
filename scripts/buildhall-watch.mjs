@@ -7,6 +7,8 @@
 //              --chain N    agent-to-agent replies allowed before a human
 //                           must speak again (default 3)
 //              --hourly N   max CLI runs per hour (default 20)
+//              --cli claude|codex   which CLI this watcher drives (own config
+//                           per CLI — run one watcher per agent, side by side)
 //   Overnight multi-agent grind:  node buildhall-watch.mjs --all --chain 100 --hourly 60
 //
 // What it does: polls the BuildHall projects you belong to; when a new HUMAN
@@ -57,15 +59,18 @@ export function shouldTrigger(msg, { names, all, selfName, agentBudgetLeft = 0 }
 }
 
 // ---------------------------------------------------------------------------
+// One watcher drives one CLI. To run several side by side (claude AND codex),
+// start each with --cli <name>: every CLI gets its own config file and its
+// own pairing, so they never fight over state.
 const CONF_DIR = join(homedir(), '.buildhall');
-const CONF_PATH = join(CONF_DIR, 'watch.json');
+let confPath = join(CONF_DIR, 'watch.json'); // default (single-watcher legacy)
 
 function loadConf() {
-  try { return JSON.parse(readFileSync(CONF_PATH, 'utf8')); } catch { return null; }
+  try { return JSON.parse(readFileSync(confPath, 'utf8')); } catch { return null; }
 }
 function saveConf(conf) {
   mkdirSync(CONF_DIR, { recursive: true });
-  writeFileSync(CONF_PATH, JSON.stringify(conf, null, 2), { mode: 0o600 });
+  writeFileSync(confPath, JSON.stringify(conf, null, 2), { mode: 0o600 });
 }
 
 async function api(base, token, path, opts = {}) {
@@ -100,15 +105,18 @@ async function pair(base) {
   }
 }
 
-async function setup(base) {
-  const rl = createInterface({ input: process.stdin, output: process.stdout });
-  let cli = (await rl.question('Which AI does this watcher drive? [claude/codex] (claude): ')).trim().toLowerCase() || 'claude';
+async function setup(base, cliArg) {
+  let cli = cliArg;
+  if (!cli) {
+    const rl = createInterface({ input: process.stdin, output: process.stdout });
+    cli = (await rl.question('Which AI does this watcher drive? [claude/codex] (claude): ')).trim().toLowerCase() || 'claude';
+    rl.close();
+  }
   if (!['claude', 'codex'].includes(cli)) cli = 'claude';
-  rl.close();
   const { token, username } = await pair(base);
   const conf = { base, token, username, cli, lastSeen: {} };
   saveConf(conf);
-  console.log(`Paired as @${username}, driving ${cli}. Config: ${CONF_PATH}`);
+  console.log(`Paired as @${username}, driving ${cli}. Config: ${confPath}`);
   return conf;
 }
 
@@ -153,13 +161,21 @@ async function main() {
   };
   const hourlyCap = flag('--hourly', DEFAULT_HOURLY_CAP);
   const maxChain = flag('--chain', DEFAULT_AGENT_CHAIN);
+  const cliIdx = args.indexOf('--cli');
+  const cliArg = cliIdx !== -1 ? String(args[cliIdx + 1] || '').toLowerCase() : null;
+  if (cliArg && !['claude', 'codex'].includes(cliArg)) {
+    console.error(`unknown --cli "${cliArg}" — use claude or codex`);
+    process.exit(1);
+  }
+  if (cliArg) confPath = join(CONF_DIR, `watch-${cliArg}.json`);
   const baseArg = args[args.indexOf('--base') + 1];
   const base = (args.includes('--base') && baseArg ? baseArg : 'https://buildhall.ai').replace(/\/$/, '');
 
   let conf = loadConf();
-  if (!conf || conf.base !== base) conf = await setup(base);
+  if (conf && cliArg && conf.cli !== cliArg) conf = null; // config belongs to another CLI — re-pair
+  if (!conf || conf.base !== base) conf = await setup(base, cliArg);
   try { await api(conf.base, conf.token, '/auth/me'); } catch (e) {
-    if (e.status === 401) { console.log('[watch] token expired — pairing again'); conf = await setup(base); } else throw e;
+    if (e.status === 401) { console.log('[watch] token expired — pairing again'); conf = await setup(base, cliArg); } else throw e;
   }
 
   const names = [conf.cli, `${conf.username} ${conf.cli}`];
