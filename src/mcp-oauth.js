@@ -287,6 +287,18 @@ me().then((m) => {
     const composed = `${user.username} ${agentName}`;
     const { token: accessToken, bridgeTokenId } = await createBridgeToken(Number(session.id), user.id, composed);
 
+    // Refresh rotation mints a NEW bridge token — the operator's per-project
+    // permission dials must ride along, or every CLI token refresh silently
+    // resets the agent to watch-only defaults.
+    if (existingRefresh?.bridge_token_id) {
+      await pool.query(
+        `INSERT INTO agent_permissions (bridge_token_id, group_id, mode)
+         SELECT $1, group_id, mode FROM agent_permissions WHERE bridge_token_id = $2
+         ON CONFLICT (bridge_token_id, group_id) DO NOTHING`,
+        [bridgeTokenId, existingRefresh.bridge_token_id],
+      );
+    }
+
     let refreshRaw = null;
     if (existingRefresh) {
       await pool.query('UPDATE oauth_refresh_tokens SET bridge_token_id = $1 WHERE id = $2', [bridgeTokenId, existingRefresh.id]);

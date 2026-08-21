@@ -276,6 +276,11 @@ test('refresh rotates the access token and revoking the agent kills the grant', 
   assert.equal((await mcp(newAccess, 'ping', {})).status, 200, 'new token works');
   accessToken = newAccess;
 
+  // permissions survive rotation: the participate flip on mcp-${RUN} must have
+  // been copied to the new bridge token, so the agent can still post
+  const stillPosts = await callTool(accessToken, 'post_message', { project: `mcp-${RUN}`, text: 'still participating after refresh' });
+  assert.equal(stillPosts.isError, false, 'permission carried across refresh rotation: ' + stillPosts.content?.[0]?.text);
+
   // operator revokes the agent from the account panel -> everything dies
   const list = await json('/api/auth/bridge-tokens', { headers: { authorization: `Bearer ${owner.token}` } });
   const live = list.body.bridgeTokens.filter((t) => !t.revoked_at);

@@ -73,17 +73,22 @@
         const { bridgeTokens: tokens } = await BH.api('/auth/bridge-tokens');
         const live = tokens.filter((t) => !t.revoked_at);
         slot('bridge-status').innerHTML = (live.map((t) =>
-          `<div class="status-item"><span>🤖 ${esc(t.agent_name)}<small style="opacity:.6;margin-left:8px">paired ${esc(when(t.created_at))}</small></span><strong style="display:flex;gap:8px"><button data-perms="${t.id}" style="border:1px solid var(--line,#2b3444);background:transparent;color:var(--muted,#9aa4b2);border-radius:8px;padding:4px 12px;font-size:13px;cursor:pointer">Permissions</button><button data-revoke="${t.id}" style="border:1px solid var(--line,#2b3444);background:transparent;color:#f87171;border-radius:8px;padding:4px 12px;font-size:13px;cursor:pointer">Revoke</button></strong></div>
+          `<div class="status-item" style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap"><span style="min-width:0;overflow-wrap:anywhere">🤖 ${esc(t.agent_name)}<small style="opacity:.6;margin-left:8px">paired ${esc(when(t.created_at))}</small></span><strong style="display:flex;gap:8px;flex-shrink:0"><button data-perms="${t.id}" style="white-space:nowrap;border:1px solid var(--line,#2b3444);background:transparent;color:var(--muted,#9aa4b2);border-radius:8px;padding:4px 12px;font-size:13px;cursor:pointer">Permissions</button><button data-revoke="${t.id}" style="white-space:nowrap;border:1px solid var(--line,#2b3444);background:transparent;color:#f87171;border-radius:8px;padding:4px 12px;font-size:13px;cursor:pointer">Revoke</button></strong></div>
            <div data-perms-panel="${t.id}" style="display:none;margin:0 0 8px;padding:10px 12px;border:1px solid var(--line,#2b3444);border-radius:10px;background:rgba(122,162,255,.04)"></div>`,
         ).join('') || '<div class="status-item"><span>No agents connected</span><strong>Use the download button to pair one</strong></div>')
-        + '<div class="status-item" style="display:block"><span>Connect a new AI (Claude Code, Codex, Gemini…):</span><div style="margin-top:6px;display:flex;gap:8px;align-items:center"><code id="mcpCmd" style="flex:1;font-size:12px;background:rgba(122,162,255,.08);border:1px solid var(--line,#2b3444);border-radius:8px;padding:8px 10px;overflow-x:auto;white-space:nowrap">claude mcp add --transport http buildhall https://buildhall.ai/mcp</code><button id="mcpCopy" class="btn" style="padding:6px 12px;font-size:13px">Copy</button></div><p style="margin:6px 0 0;font-size:12px;color:var(--muted)">Paste in your terminal — your browser opens and you click Approve. Other tools: point them at https://buildhall.ai/mcp (OAuth).</p></div>'
+        + '<div class="status-item" style="display:block"><span>Connect a new AI:</span>'
+        + '<div style="margin-top:6px;display:flex;gap:8px;align-items:center"><small style="width:84px;flex-shrink:0;color:var(--muted)">Claude Code</small><code id="mcpCmd" style="flex:1;min-width:0;font-size:12px;background:rgba(122,162,255,.08);border:1px solid var(--line,#2b3444);border-radius:8px;padding:8px 10px;overflow-x:auto;white-space:nowrap">claude mcp add --transport http buildhall https://buildhall.ai/mcp</code><button id="mcpCopy" class="btn" style="padding:6px 12px;font-size:13px;flex-shrink:0">Copy</button></div>'
+        + '<div style="margin-top:6px;display:flex;gap:8px;align-items:center"><small style="width:84px;flex-shrink:0;color:var(--muted)">Codex</small><code id="mcpCmdCodex" style="flex:1;min-width:0;font-size:12px;background:rgba(122,162,255,.08);border:1px solid var(--line,#2b3444);border-radius:8px;padding:8px 10px;overflow-x:auto;white-space:nowrap">codex mcp add buildhall --url https://buildhall.ai/mcp</code><button id="mcpCopyCodex" class="btn" style="padding:6px 12px;font-size:13px;flex-shrink:0">Copy</button></div>'
+        + '<p style="margin:6px 0 0;font-size:12px;color:var(--muted)">Paste in your terminal, then approve in the browser (if it does not open by itself, copy the printed link into your browser). Other tools: point them at https://buildhall.ai/mcp (OAuth).</p></div>'
         + '<div class="status-item"><span>Provider keys</span><strong>Stay on your machine</strong></div>';
-        const copyBtn = document.getElementById('mcpCopy');
-        if (copyBtn) copyBtn.onclick = async () => {
-          await navigator.clipboard.writeText(document.getElementById('mcpCmd').textContent).catch(() => {});
-          copyBtn.textContent = 'Copied';
-          setTimeout(() => { copyBtn.textContent = 'Copy'; }, 1500);
-        };
+        for (const [btnId, cmdId] of [['mcpCopy', 'mcpCmd'], ['mcpCopyCodex', 'mcpCmdCodex']]) {
+          const copyBtn = document.getElementById(btnId);
+          if (copyBtn) copyBtn.onclick = async () => {
+            await navigator.clipboard.writeText(document.getElementById(cmdId).textContent).catch(() => {});
+            copyBtn.textContent = 'Copied';
+            setTimeout(() => { copyBtn.textContent = 'Copy'; }, 1500);
+          };
+        }
         // Per-project permissions: participate / watch-only / no access.
         // Server enforces these on every MCP tool call; this is just the dial.
         const MODES = [['participate', 'Participate'], ['watch', 'Watch-only'], ['none', 'No access']];
@@ -92,7 +97,7 @@
           const { permissions } = await BH.api(`/auth/bridge-tokens/${id}/permissions`);
           panel.innerHTML = permissions.length ? '<p style="margin:0 0 8px;font-size:12px;color:var(--muted)">What this agent may do in each of your projects. Public projects default to watch-only — the agent reads but cannot post until you allow it.</p>'
             + permissions.map((p) =>
-              `<div style="display:flex;align-items:center;gap:10px;padding:4px 0"><span style="flex:1;font-size:13px">${esc(p.name)} <small style="opacity:.55">(${esc(p.visibility)})</small></span><select data-mode-for="${esc(p.slug)}" style="background:transparent;color:inherit;border:1px solid var(--line,#2b3444);border-radius:8px;padding:3px 8px;font-size:13px">${MODES.map(([v, label]) => `<option value="${v}" ${v === p.mode ? 'selected' : ''}>${label}${v === p.defaultMode && !p.explicit ? ' (default)' : ''}</option>`).join('')}</select></div>`,
+              `<div style="display:flex;align-items:center;gap:10px;padding:4px 0"><span style="flex:1;font-size:13px">${esc(p.name)} <small style="opacity:.55">(${esc(p.visibility)})</small></span><select data-mode-for="${esc(p.slug)}" style="background:#141a26;color:#e6e9f0;border:1px solid var(--line,#2b3444);border-radius:8px;padding:3px 8px;font-size:13px">${MODES.map(([v, label]) => `<option value="${v}" ${v === p.mode ? 'selected' : ''}>${label}${v === p.defaultMode && !p.explicit ? ' (default)' : ''}</option>`).join('')}</select></div>`,
             ).join('') : '<p style="margin:0;font-size:13px;color:var(--muted)">You have no projects yet.</p>';
           panel.querySelectorAll('select[data-mode-for]').forEach((sel) => {
             const p = permissions.find((x) => x.slug === sel.dataset.modeFor);
