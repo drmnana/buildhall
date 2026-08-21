@@ -12,8 +12,10 @@
 // post goes out through your agent's own MCP identity, so permissions,
 // attribution and rate limits all apply.
 //
-// Loop breakers (deliberate): agent-authored messages never trigger, 60s
-// cooldown per project, at most 20 responses per hour, one CLI run at a time.
+// Loop breakers (deliberate): other agents CAN trigger yours (that's
+// multi-agent discussion), but only 3 agent-prompted replies per project
+// until a human speaks again; plus 60s cooldown per project, at most 20
+// responses per hour, one CLI run at a time, never answers itself.
 //
 // First run pairs this watcher with your account in the browser (no token
 // copy-paste) and asks which CLI to drive. Config: ~/.buildhall/watch.json
@@ -28,14 +30,21 @@ const POLL_MS = 10_000;
 const COOLDOWN_MS = 60_000;       // per project
 const HOURLY_CAP = 20;            // CLI invocations per hour, all projects
 const CLI_TIMEOUT_MS = 5 * 60_000;
+const MAX_AGENT_CHAIN = 3;        // agent-prompted replies per project until a human speaks
 
 // Decide whether a message should wake the agent. Exported for tests.
-// Rules: only human-authored text (agents never trigger agents — loop breaker);
-// mention mode needs one of `names` as a whole word; --all takes any human
-// message not written by the watcher's own operator... except the operator
-// addressing the agent by name, which always works.
-export function shouldTrigger(msg, { names, all }) {
-  if (msg.actor_type !== 'human') return false;
+// Humans trigger on a whole-word mention of the agent (or --all). Other
+// AGENTS can trigger too — that's what multi-agent discussion is — but only
+// while the per-project agent-chain budget lasts: at most MAX_AGENT_CHAIN
+// agent-prompted replies in a row until a human speaks again (the human
+// heartbeat). That allows real agent-to-agent work at project kickoff while
+// making runaway agent↔agent loops die out on their own. The agent's own
+// messages never trigger it.
+export function shouldTrigger(msg, { names, all, selfName, agentBudgetLeft = 0 }) {
+  const isAi = msg.actor_type === 'ai';
+  if (!isAi && msg.actor_type !== 'human') return false;
+  if (isAi && selfName && String(msg.agent_name || '').toLowerCase() === selfName.toLowerCase()) return false; // never answer yourself
+  if (isAi && agentBudgetLeft <= 0) return false;
   const text = String(msg.text || '');
   const mentioned = names.some((n) =>
     new RegExp(`(^|[^a-z0-9])${n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}([^a-z0-9]|$)`, 'i').test(text));
@@ -141,7 +150,9 @@ async function main() {
   }
 
   const names = [conf.cli, `${conf.username} ${conf.cli}`];
+  const selfName = `${conf.username} ${conf.cli}`;
   const cooldown = new Map(); // slug -> last CLI run ts
+  const agentChain = new Map(); // slug -> agent-prompted replies since the last human message
   const hourLog = [];
   // Don't burn a CLI invocation in projects where no agent may post anyway
   // (public projects default to No access until the human lets the agent in).
@@ -171,8 +182,12 @@ async function main() {
         if (seen === undefined) { conf.lastSeen[g.slug] = newest; saveConf(conf); continue; } // baseline: never respond to history
         conf.lastSeen[g.slug] = newest;
         saveConf(conf);
-        const hits = messages.filter((m) => shouldTrigger(m, { names, all }));
+        // Human heartbeat: any human message resets this project's agent-chain budget.
+        if (messages.some((m) => m.actor_type === 'human')) agentChain.set(g.slug, 0);
+        const budgetLeft = MAX_AGENT_CHAIN - (agentChain.get(g.slug) || 0);
+        const hits = messages.filter((m) => shouldTrigger(m, { names, all, selfName, agentBudgetLeft: budgetLeft }));
         if (!hits.length) continue;
+        const agentPrompted = hits.every((m) => m.actor_type === 'ai');
         if (!(await canPost(g.slug))) { console.log(`[watch] ${g.slug}: agent has no Participate permission here — skipping (enable it in the project panel)`); continue; }
         const now = Date.now();
         while (hourLog.length && now - hourLog[0] > 3_600_000) hourLog.shift();
@@ -180,6 +195,7 @@ async function main() {
         if (now - (cooldown.get(g.slug) || 0) < COOLDOWN_MS) { console.log(`[watch] cooldown — skipping ${g.slug}`); continue; }
         cooldown.set(g.slug, now);
         hourLog.push(now);
+        if (agentPrompted) agentChain.set(g.slug, (agentChain.get(g.slug) || 0) + 1);
         console.log(`[watch] ${g.slug}: ${hits.length} triggering message(s) — waking ${conf.cli}`);
         await runCli(conf, buildPrompt(conf, g.slug, messages));
       }
