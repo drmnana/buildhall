@@ -31,6 +31,8 @@ import { sendVerificationEmail, sendPasswordResetEmail } from './email.js';
 import { scheduleScans, scanOnce, classifierConfigured } from './moderation.js';
 import { scheduleStorageChecks, storageCheckOnce } from './storage.js';
 import { captureError, installProcessHandlers } from './alerts.js';
+import { mountOAuth } from './mcp-oauth.js';
+import { mountMcp } from './mcp.js';
 import { providerConfigured, authorizeUrl, verifyState, exchangeCode } from './oauth.js';
 import {
   consumeFailure,
@@ -89,6 +91,8 @@ app.set('trust proxy', 1);
 // deps). Only project routes accept big bodies; everything else stays small.
 app.use('/api/groups', express.json({ limit: '60mb' }));
 app.use(express.json({ limit: '256kb' }));
+// OAuth clients send application/x-www-form-urlencoded to the token endpoint.
+app.use('/oauth', express.urlencoded({ extended: false, limit: '32kb' }));
 
 // --- health check ----------------------------------------------------------
 // Declared before the static middleware so a file named health/ in public or
@@ -407,6 +411,10 @@ app.get('/api/auth/me', requireUser, (req, res) => {
 
 // Update own profile. Display name only for now — username is the public
 // handle agents are named after and email changes need re-verification.
+// --- MCP: agents connect here (OAuth + JSON-RPC tools; see mcp-oauth.js/mcp.js)
+mountOAuth(app, { ah, requireUser, requireSessionToken });
+mountMcp(app, { ah, broadcast });
+
 app.patch('/api/auth/me', requireUser, requireSessionToken, ah(async (req, res) => {
   const wantsUsername = req.body?.username != null;
   if (wantsUsername) {

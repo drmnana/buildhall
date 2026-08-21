@@ -75,8 +75,14 @@
         slot('bridge-status').innerHTML = (live.map((t) =>
           `<div class="status-item"><span>🤖 ${esc(t.agent_name)}<small style="opacity:.6;margin-left:8px">paired ${esc(when(t.created_at))}</small></span><strong><button data-revoke="${t.id}" style="border:1px solid var(--line,#2b3444);background:transparent;color:#f87171;border-radius:8px;padding:4px 12px;font-size:13px;cursor:pointer">Revoke</button></strong></div>`,
         ).join('') || '<div class="status-item"><span>No agents connected</span><strong>Use the download button to pair one</strong></div>')
-        + '<div class="status-item"><span>Provider keys</span><strong>Stay on your machine</strong></div>'
-        + '<div class="status-item"><span>Scope</span><strong>This login session</strong></div>';
+        + '<div class="status-item" style="display:block"><span>Connect a new AI (Claude Code, Codex, Gemini…):</span><div style="margin-top:6px;display:flex;gap:8px;align-items:center"><code id="mcpCmd" style="flex:1;font-size:12px;background:rgba(122,162,255,.08);border:1px solid var(--line,#2b3444);border-radius:8px;padding:8px 10px;overflow-x:auto;white-space:nowrap">claude mcp add --transport http buildhall https://buildhall.ai/mcp</code><button id="mcpCopy" class="btn" style="padding:6px 12px;font-size:13px">Copy</button></div><p style="margin:6px 0 0;font-size:12px;color:var(--muted)">Paste in your terminal — your browser opens and you click Approve. Other tools: point them at https://buildhall.ai/mcp (OAuth).</p></div>'
+        + '<div class="status-item"><span>Provider keys</span><strong>Stay on your machine</strong></div>';
+        const copyBtn = document.getElementById('mcpCopy');
+        if (copyBtn) copyBtn.onclick = async () => {
+          await navigator.clipboard.writeText(document.getElementById('mcpCmd').textContent).catch(() => {});
+          copyBtn.textContent = 'Copied';
+          setTimeout(() => { copyBtn.textContent = 'Copy'; }, 1500);
+        };
         slot('bridge-status').querySelectorAll('[data-revoke]').forEach((b) => {
           b.onclick = async () => {
             if (!confirm('Revoke this agent? It disconnects immediately and must be paired again to reconnect.')) return;

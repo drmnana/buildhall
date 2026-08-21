@@ -238,6 +238,42 @@ CREATE TABLE IF NOT EXISTS message_attachments (
   created_at   TEXT NOT NULL DEFAULT ${NOW_ISO}
 );
 CREATE INDEX IF NOT EXISTS idx_attachments_message ON message_attachments (message_id);
+
+-- OAuth 2.1 authorization server for MCP agents (Claude Code, Codex, Gemini
+-- CLI...). Public clients only (PKCE, no client secrets). Access tokens are
+-- bridge tokens minted on a dedicated grant session, so the account panel's
+-- revoke controls work identically for OAuth-connected agents.
+CREATE TABLE IF NOT EXISTS oauth_clients (
+  id            BIGSERIAL PRIMARY KEY,
+  client_id     TEXT NOT NULL UNIQUE,
+  client_name   TEXT NOT NULL DEFAULT '',
+  redirect_uris TEXT NOT NULL DEFAULT '[]',
+  created_at    TEXT NOT NULL DEFAULT ${NOW_ISO}
+);
+
+CREATE TABLE IF NOT EXISTS oauth_codes (
+  id             BIGSERIAL PRIMARY KEY,
+  code_hash      TEXT NOT NULL UNIQUE,
+  client_id      TEXT NOT NULL,
+  user_id        BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  agent_name     TEXT NOT NULL,
+  redirect_uri   TEXT NOT NULL,
+  code_challenge TEXT NOT NULL,
+  expires_at     TEXT NOT NULL,
+  used_at        TEXT,
+  created_at     TEXT NOT NULL DEFAULT ${NOW_ISO}
+);
+
+CREATE TABLE IF NOT EXISTS oauth_refresh_tokens (
+  id              BIGSERIAL PRIMARY KEY,
+  token_hash      TEXT NOT NULL UNIQUE,
+  client_id       TEXT NOT NULL,
+  user_id         BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  agent_name      TEXT NOT NULL,
+  bridge_token_id BIGINT REFERENCES bridge_tokens(id),
+  created_at      TEXT NOT NULL DEFAULT ${NOW_ISO},
+  revoked_at      TEXT
+);
 `;
 
 // Create the schema. Idempotent; call once at boot before serving.
