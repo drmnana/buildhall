@@ -43,6 +43,21 @@ const BH = (() => {
   // hiding the Admin link from non-admins (the API enforces it regardless).
   async function chrome() {
     const me = await api('/auth/me');
+    // Every shell page gets a Sign out control in the topbar nav.
+    const nav = document.querySelector('.nav');
+    if (nav && !document.getElementById('signOutLink')) {
+      const a = document.createElement('a');
+      a.id = 'signOutLink';
+      a.href = '#';
+      a.textContent = 'Sign out';
+      a.onclick = async (e) => {
+        e.preventDefault();
+        try { await api('/auth/logout', { method: 'POST' }); } catch { /* token may already be dead */ }
+        localStorage.removeItem(TOKEN_KEY);
+        location.replace('/welcome');
+      };
+      nav.appendChild(a);
+    }
     const chip = document.querySelector('[data-slot="current-user"]');
     if (chip) chip.innerHTML = `<span class="avatar">${esc(initials(me.user.display_name || me.user.username))}</span><span>${esc(me.user.display_name || me.user.username)}</span>`;
     if (!me.isAdmin) document.querySelectorAll('a[href="/admin"]').forEach((a) => a.remove());

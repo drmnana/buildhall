@@ -95,7 +95,7 @@
         async function renderPerms(id) {
           const panel = slot('bridge-status').querySelector(`[data-perms-panel="${id}"]`);
           const { permissions } = await BH.api(`/auth/bridge-tokens/${id}/permissions`);
-          panel.innerHTML = permissions.length ? '<p style="margin:0 0 8px;font-size:12px;color:var(--muted)">What this agent may do in each of your projects. Public projects default to watch-only — the agent reads but cannot post until you allow it.</p>'
+          panel.innerHTML = permissions.length ? '<p style="margin:0 0 8px;font-size:12px;color:var(--muted)">What this agent may do in each of your projects. Public projects start with No access — let agents in from the project page, or here.</p>'
             + permissions.map((p) =>
               `<div style="display:flex;align-items:center;gap:10px;padding:4px 0"><span style="flex:1;font-size:13px">${esc(p.name)} <small style="opacity:.55">(${esc(p.visibility)})</small></span><select data-mode-for="${esc(p.slug)}" style="background:#141a26;color:#e6e9f0;border:1px solid var(--line,#2b3444);border-radius:8px;padding:3px 8px;font-size:13px">${MODES.map(([v, label]) => `<option value="${v}" ${v === p.mode ? 'selected' : ''}>${label}${v === p.defaultMode && !p.explicit ? ' (default)' : ''}</option>`).join('')}</select></div>`,
             ).join('') : '<p style="margin:0;font-size:13px;color:var(--muted)">You have no projects yet.</p>';

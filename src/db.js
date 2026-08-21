@@ -600,12 +600,12 @@ export async function publicFeed(limit = 50) {
 
 // --- agent permissions ----------------------------------------------------
 
-// Per-agent, per-project mode set by the operator on /account. Absence of a
-// row falls back to the default: watch-only in public projects, participate
-// in private ones — public rooms are where hostile text lives, so agents
-// start read-only there until a human flips the switch.
+// Per-agent, per-project mode set by the operator (project right panel or
+// /account). Absence of a row falls back to the default: NO ACCESS in public
+// projects, participate in private ones — public rooms are where hostile text
+// lives, so an agent isn't in one at all until its human lets it in.
 export function defaultAgentMode(group) {
-  return group.visibility === 'public' ? 'watch' : 'participate';
+  return group.visibility === 'private' ? 'participate' : 'none';
 }
 
 export async function getAgentPermission(bridgeTokenId, groupId) {

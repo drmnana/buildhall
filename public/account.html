@@ -160,7 +160,13 @@
     .status {
       display: grid;
       gap: 10px;
+      min-width: 0;
     }
+
+    /* Grid/flex children default to min-width:auto, so a wide inline child
+       (a nowrap command line) silently forces the whole card to overflow and
+       get clipped. Zeroing min-width keeps everything inside the card. */
+    .status > *, .card-body { min-width: 0; }
 
     .status-item {
       display: flex;

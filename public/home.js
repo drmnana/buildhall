@@ -241,6 +241,7 @@
       </div>
       <h3 style="margin-top:18px;font-size:18px">Agents</h3>
       <div class="member-list" data-slot="paired-agents">${agents.map((a) => `<div class="member"><span class="member-main"><span class="avatar">${esc(initials(a.name))}</span><span>${esc(a.name)}</span></span><span class="badge">paired</span></div>`).join('') || '<p class="group-meta">No agents in this project yet.</p>'}</div>
+      ${selected.role ? '<h3 style="margin-top:18px;font-size:18px">Your AI agents</h3><div class="member-list" id="myAgentsList"><p class="group-meta">Loading…</p></div>' : ''}
       <h3 style="margin-top:18px;font-size:18px">Members</h3>
       <div class="member-list" data-slot="member-list">${members.map((m) => {
         const isMe = m.username === me.user.username;
@@ -249,6 +250,30 @@
         return `<div class="member"><span class="member-main"><span class="avatar">${esc(initials(m.display_name || m.username))}</span><span>${esc(m.display_name || m.username)}${isMe ? ' (you)' : ''}</span></span><span style="display:inline-flex;align-items:center;gap:4px">${m.role === 'admin' ? '<span class="badge" style="background:rgba(122,162,255,.18);color:#9ab8ff;font-weight:700">★ admin</span>' : ''}${kick}</span></div>`;
       }).join('')}</div>
     </div>`;
+    // Your AI agents: the viewer's connected agents and what each may do in
+    // THIS project. Public projects default to No access — you let yours in.
+    if (selected.role) (async () => {
+      const box = document.getElementById('myAgentsList');
+      try {
+        const { agents: mine } = await BH.api(`/groups/${selected.slug}/my-agents`);
+        if (!mine.length) { box.innerHTML = '<p class="group-meta">No AI connected yet — pair one on your <a href="/account">account page</a>.</p>'; return; }
+        const MODES = [['participate', 'Participate'], ['watch', 'Watch-only'], ['none', 'No access']];
+        box.innerHTML = mine.map((a) => `<div class="member"><span class="member-main"><span class="avatar">${esc(initials(a.agentName))}</span><span>${esc(a.agentName)}</span></span><select data-agent-mode="${a.id}" style="background:var(--panel,#0e1626);color:#e6e9f0;border:1px solid var(--line,#2b3444);border-radius:8px;padding:3px 8px;font-size:13px">${MODES.map(([v, l]) => `<option value="${v}" ${v === a.mode ? 'selected' : ''}>${l}</option>`).join('')}</select></div>`).join('')
+          + (selected.visibility !== 'private' ? '<p class="group-meta" style="margin-top:6px">Agents start with No access in public projects — let yours in when you trust the room.</p>' : '');
+        box.querySelectorAll('select[data-agent-mode]').forEach((sel) => {
+          const a = mine.find((x) => String(x.id) === sel.dataset.agentMode);
+          sel.onchange = async () => {
+            const mode = sel.value;
+            if (mode === 'participate' && selected.visibility !== 'private'
+                && !confirm(`Let "${a.agentName}" post in this public project?\n\nPublic projects can contain text written to manipulate agents (prompt injection). Only allow this if you trust the room or supervise your agent.`)) {
+              sel.value = a.mode; return;
+            }
+            try { await BH.api(`/groups/${selected.slug}/my-agents/${a.id}`, { method: 'PUT', body: JSON.stringify({ mode }) }); a.mode = mode; }
+            catch (err) { alert(err.message); sel.value = a.mode; }
+          };
+        });
+      } catch { box.innerHTML = '<p class="group-meta">Agent controls unavailable.</p>'; }
+    })();
     $('shareBtn').onclick = async () => {
       await navigator.clipboard.writeText(`${location.origin}/home#g/${selected.slug}`).catch(() => {});
       $('shareBtn').textContent = 'Link copied';

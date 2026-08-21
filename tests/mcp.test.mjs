@@ -168,27 +168,36 @@ test('tools work end to end: list, post (as agent), read with provenance', async
   const slug = `mcp-${RUN}`;
   await json('/api/groups', { method: 'POST', headers: { authorization: `Bearer ${owner.token}` }, body: JSON.stringify({ slug, name: 'MCP Lab', visibility: 'public', goal: 'test the bridge' }) });
 
+  // default-safe: a public project is NO ACCESS until the human lets the agent in
   const projects = await callTool(accessToken, 'list_my_projects', {});
-  assert.match(projects.content[0].text, new RegExp(slug));
-  assert.match(projects.content[0].text, /WATCH-ONLY/, 'public project defaults to watch-only');
+  assert.ok(!projects.content[0].text.includes(slug), 'public project hidden by default (No access)');
+  const noAccess = await callTool(accessToken, 'read_messages', { project: slug });
+  assert.equal(noAccess.isError, true, 'read blocked at No access');
 
-  // default-safe: posting to a public project is blocked until the human flips it
+  // operator lets the agent in as watch-only from the project panel API
+  const toks = await json('/api/auth/bridge-tokens', { headers: { authorization: `Bearer ${owner.token}` } });
+  agentTokenId = toks.body.bridgeTokens.find((t) => !t.revoked_at).id;
+  const mineList = await json(`/api/groups/${slug}/my-agents`, { headers: { authorization: `Bearer ${owner.token}` } });
+  const entry = mineList.body.agents.find((a) => a.id === agentTokenId);
+  assert.equal(entry.mode, 'none');
+  assert.equal(entry.defaultMode, 'none');
+  const toWatch = await json(`/api/groups/${slug}/my-agents/${agentTokenId}`, {
+    method: 'PUT', headers: { authorization: `Bearer ${owner.token}` },
+    body: JSON.stringify({ mode: 'watch' }),
+  });
+  assert.equal(toWatch.status, 200, JSON.stringify(toWatch.body));
+
+  // watch-only: listed with a warning, readable, not postable
+  const watchList = await callTool(accessToken, 'list_my_projects', {});
+  assert.match(watchList.content[0].text, /WATCH-ONLY/);
   const blocked = await callTool(accessToken, 'post_message', { project: slug, text: 'should not land' });
   assert.equal(blocked.isError, true);
   assert.match(blocked.content[0].text, /WATCH-ONLY/i);
-
-  // reading is allowed in watch-only
   const watchRead = await callTool(accessToken, 'read_messages', { project: slug });
   assert.equal(watchRead.isError, false);
 
-  // operator flips the agent to participate from the account panel API
-  const toks = await json('/api/auth/bridge-tokens', { headers: { authorization: `Bearer ${owner.token}` } });
-  agentTokenId = toks.body.bridgeTokens.find((t) => !t.revoked_at).id;
-  const matrix = await json(`/api/auth/bridge-tokens/${agentTokenId}/permissions`, { headers: { authorization: `Bearer ${owner.token}` } });
-  const entry = matrix.body.permissions.find((p) => p.slug === slug);
-  assert.equal(entry.mode, 'watch');
-  assert.equal(entry.defaultMode, 'watch');
-  const flip = await json(`/api/auth/bridge-tokens/${agentTokenId}/permissions/${slug}`, {
+  // participate: the human flips it in the project panel and posting opens up
+  const flip = await json(`/api/groups/${slug}/my-agents/${agentTokenId}`, {
     method: 'PUT', headers: { authorization: `Bearer ${owner.token}` },
     body: JSON.stringify({ mode: 'participate' }),
   });

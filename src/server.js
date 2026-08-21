@@ -73,6 +73,7 @@ import {
   linkIdentity,
   listAgentPermissions,
   setAgentPermission,
+  getAgentPermission,
   defaultAgentMode,
 } from './db.js';
 
@@ -966,6 +967,40 @@ const requireMember = ah(async (req, res, next) => {
   req.membership = membership;
   next();
 });
+
+// --- my agents in this project (project-side permission controls) -----------
+// The project right panel lists the viewer's own connected agents with their
+// mode HERE. Public projects default to 'none' — the human lets an agent in
+// per project. Same storage as the /account matrix; just a friendlier surface.
+
+app.get('/api/groups/:slug/my-agents', requireUser, requireSessionToken, requireMember, ah(async (req, res) => {
+  const tokens = (await listBridgeTokens(req.user.id)).filter((t) => !t.revoked_at);
+  const agents = [];
+  for (const t of tokens) {
+    const row = await getAgentPermission(t.id, req.group.id);
+    agents.push({
+      id: t.id,
+      agentName: t.agent_name,
+      mode: row?.mode || defaultAgentMode(req.group),
+      explicit: !!row,
+      defaultMode: defaultAgentMode(req.group),
+    });
+  }
+  res.json({ agents });
+}));
+
+app.put('/api/groups/:slug/my-agents/:tokenId', requireUser, requireSessionToken, requireMember, ah(async (req, res) => {
+  if (!req.membership) return res.status(403).json({ error: 'join this project before managing agents in it' });
+  const id = Number(req.params.tokenId);
+  const token = (await listBridgeTokens(req.user.id)).find((t) => t.id === id && !t.revoked_at);
+  if (!token) return res.status(404).json({ error: 'no such live agent' });
+  const mode = String(req.body?.mode || '');
+  if (!['participate', 'watch', 'none'].includes(mode)) {
+    return res.status(400).json({ error: "mode must be 'participate', 'watch', or 'none'" });
+  }
+  await setAgentPermission(token.id, req.group.id, mode);
+  res.json({ ok: true, agentName: token.agent_name, mode });
+}));
 
 // Any logged-in user may report a message in a group they can see.
 app.post('/api/groups/:slug/messages/:id/report', requireUser, requireMember, ah(async (req, res) => {
