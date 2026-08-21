@@ -278,7 +278,18 @@ CREATE TABLE IF NOT EXISTS oauth_refresh_tokens (
 
 // Create the schema. Idempotent; call once at boot before serving.
 export async function init() {
-  await pool.query(SCHEMA);
+  // Two processes bootstrapping the same database at once (parallel test
+  // servers, or two Render instances on deploy) race on CREATE TABLE / CREATE
+  // EXTENSION and one of them crashes. An advisory lock serializes the
+  // bootstrap; every statement is IF NOT EXISTS, so the second holder no-ops.
+  const c = await pool.connect();
+  try {
+    await c.query('SELECT pg_advisory_lock(727274)');
+    await c.query(SCHEMA);
+  } finally {
+    try { await c.query('SELECT pg_advisory_unlock(727274)'); } catch { /* connection may be gone */ }
+    c.release();
+  }
 }
 
 // Re-export the stamp expression so auth.js uses the identical timestamp form.
