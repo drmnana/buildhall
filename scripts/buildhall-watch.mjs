@@ -3,7 +3,11 @@
 //
 //   Download:  https://buildhall.ai/watch.mjs
 //   Run:       node buildhall-watch.mjs           (mention-triggered, default)
-//              node buildhall-watch.mjs --all     (respond to every human message)
+//              node buildhall-watch.mjs --all     (respond to every message)
+//              --chain N    agent-to-agent replies allowed before a human
+//                           must speak again (default 3)
+//              --hourly N   max CLI runs per hour (default 20)
+//   Overnight multi-agent grind:  node buildhall-watch.mjs --all --chain 100 --hourly 60
 //
 // What it does: polls the BuildHall projects you belong to; when a new HUMAN
 // message mentions your agent (or --all), it launches your AI CLI headless
@@ -12,10 +16,10 @@
 // post goes out through your agent's own MCP identity, so permissions,
 // attribution and rate limits all apply.
 //
-// Loop breakers (deliberate): other agents CAN trigger yours (that's
-// multi-agent discussion), but only 3 agent-prompted replies per project
-// until a human speaks again; plus 60s cooldown per project, at most 20
-// responses per hour, one CLI run at a time, never answers itself.
+// Loop breakers (defaults, tune with --chain/--hourly): other agents CAN
+// trigger yours (that's multi-agent discussion), bounded by the agent-chain
+// budget until a human speaks again; plus 60s cooldown per project, an
+// hourly run cap, one CLI run at a time, never answers itself.
 //
 // First run pairs this watcher with your account in the browser (no token
 // copy-paste) and asks which CLI to drive. Config: ~/.buildhall/watch.json
@@ -28,16 +32,17 @@ import { pathToFileURL } from 'node:url';
 
 const POLL_MS = 10_000;
 const COOLDOWN_MS = 60_000;       // per project
-const HOURLY_CAP = 20;            // CLI invocations per hour, all projects
 const CLI_TIMEOUT_MS = 5 * 60_000;
-const MAX_AGENT_CHAIN = 3;        // agent-prompted replies per project until a human speaks
+// Defaults, not law — override with --hourly N and --chain N. They protect
+// against accidents (and your CLI subscription), not against working hard.
+const DEFAULT_HOURLY_CAP = 20;    // CLI invocations per hour, all projects
+const DEFAULT_AGENT_CHAIN = 3;    // agent-prompted replies per project until a human speaks
 
 // Decide whether a message should wake the agent. Exported for tests.
 // Humans trigger on a whole-word mention of the agent (or --all). Other
 // AGENTS can trigger too — that's what multi-agent discussion is — but only
-// while the per-project agent-chain budget lasts: at most MAX_AGENT_CHAIN
-// agent-prompted replies in a row until a human speaks again (the human
-// heartbeat). That allows real agent-to-agent work at project kickoff while
+// while the per-project agent-chain budget lasts: agent-prompted replies
+// in a row until a human speaks again (the human heartbeat; --chain N). That allows real agent-to-agent work at project kickoff while
 // making runaway agent↔agent loops die out on their own. The agent's own
 // messages never trigger it.
 export function shouldTrigger(msg, { names, all, selfName, agentBudgetLeft = 0 }) {
@@ -140,6 +145,14 @@ function runCli(conf, prompt) {
 async function main() {
   const args = process.argv.slice(2);
   const all = args.includes('--all');
+  const flag = (name, dflt) => {
+    const i = args.indexOf(name);
+    if (i === -1) return dflt;
+    const v = Number(args[i + 1]);
+    return Number.isInteger(v) && v >= 0 ? v : dflt;
+  };
+  const hourlyCap = flag('--hourly', DEFAULT_HOURLY_CAP);
+  const maxChain = flag('--chain', DEFAULT_AGENT_CHAIN);
   const baseArg = args[args.indexOf('--base') + 1];
   const base = (args.includes('--base') && baseArg ? baseArg : 'https://buildhall.ai').replace(/\/$/, '');
 
@@ -168,7 +181,7 @@ async function main() {
     modeCache.set(slug, { ts: Date.now(), canPost: ok });
     return ok;
   }
-  console.log(`[watch] watching as @${conf.username} (${conf.cli}); trigger: ${all ? 'ALL human messages' : `mentions of ${JSON.stringify(names)}`}; Ctrl-C to stop`);
+  console.log(`[watch] watching as @${conf.username} (${conf.cli}); trigger: ${all ? 'ALL messages' : `mentions of ${JSON.stringify(names)}`}; agent chain ${maxChain}, hourly cap ${hourlyCap}; Ctrl-C to stop`);
 
   for (;;) {
     try {
@@ -184,14 +197,14 @@ async function main() {
         saveConf(conf);
         // Human heartbeat: any human message resets this project's agent-chain budget.
         if (messages.some((m) => m.actor_type === 'human')) agentChain.set(g.slug, 0);
-        const budgetLeft = MAX_AGENT_CHAIN - (agentChain.get(g.slug) || 0);
+        const budgetLeft = maxChain - (agentChain.get(g.slug) || 0);
         const hits = messages.filter((m) => shouldTrigger(m, { names, all, selfName, agentBudgetLeft: budgetLeft }));
         if (!hits.length) continue;
         const agentPrompted = hits.every((m) => m.actor_type === 'ai');
         if (!(await canPost(g.slug))) { console.log(`[watch] ${g.slug}: agent has no Participate permission here — skipping (enable it in the project panel)`); continue; }
         const now = Date.now();
         while (hourLog.length && now - hourLog[0] > 3_600_000) hourLog.shift();
-        if (hourLog.length >= HOURLY_CAP) { console.log(`[watch] hourly cap (${HOURLY_CAP}) reached — skipping ${g.slug}`); continue; }
+        if (hourLog.length >= hourlyCap) { console.log(`[watch] hourly cap (${hourlyCap}) reached — raise it with --hourly N; skipping ${g.slug}`); continue; }
         if (now - (cooldown.get(g.slug) || 0) < COOLDOWN_MS) { console.log(`[watch] cooldown — skipping ${g.slug}`); continue; }
         cooldown.set(g.slug, now);
         hourLog.push(now);
