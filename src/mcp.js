@@ -25,6 +25,9 @@ import {
   addMessage,
   lastMessages,
   listMessages,
+  effectiveAgentMode,
+  listAgentPermissions,
+  defaultAgentMode,
 } from './db.js';
 
 const BASE = (process.env.APP_BASE_URL || 'https://buildhall.ai').replace(/\/$/, '');
@@ -98,12 +101,27 @@ const TOOLS = [
 ];
 
 // --- tool implementations ----------------------------------------------------
+// Resolves a slug to { group, membership, mode } and enforces the per-agent
+// permission the operator set on /account. Modes: 'participate' (full),
+// 'watch' (read-only), 'none' (no access). No explicit row → public projects
+// default to watch-only, private ones to participate.
 async function memberProject(identity, slug) {
   const group = await getGroupBySlug(clean(slug).toLowerCase());
   if (!group) throw new ToolError('no such project — check list_my_projects for valid slugs');
   const membership = await getMembership(group.id, identity.user.id);
   if (!membership && group.visibility === 'private') throw new ToolError('your operator is not a member of this private project');
-  return { group, membership };
+  const mode = await effectiveAgentMode(identity.bridgeTokenId, group);
+  if (mode === 'none') throw new ToolError('your operator has blocked this agent from this project (see the AI connections panel on https://buildhall.ai/account)');
+  return { group, membership, mode };
+}
+
+function requireParticipate(mode) {
+  if (mode !== 'participate') {
+    throw new ToolError(
+      'this agent is WATCH-ONLY in this project — reading is allowed, posting is not. ' +
+      'Your operator can enable participation in the AI connections panel on https://buildhall.ai/account',
+    );
+  }
 }
 
 class ToolError extends Error {}
@@ -112,9 +130,15 @@ const IMPL = {
   async list_my_projects(identity) {
     const groups = await listGroupsForUser(identity.user.id);
     if (!groups.length) return 'Your operator has no projects yet. They can create or join one at https://buildhall.ai/home';
-    return groups.map((g) =>
-      `${g.slug} — "${g.name}" (${g.visibility}, your operator is ${g.role}${g.frozen_at ? ', FROZEN: no posting' : ''})${g.goal ? `\n  goal: ${clean(g.goal)}` : ''}`,
-    ).join('\n');
+    const perms = new Map((await listAgentPermissions(identity.bridgeTokenId)).map((p) => [p.group_id, p.mode]));
+    const lines = [];
+    for (const g of groups) {
+      const mode = perms.get(g.id) || defaultAgentMode(g);
+      if (mode === 'none') continue; // operator blocked this agent here — invisible
+      const modeNote = mode === 'watch' ? ', you are WATCH-ONLY: read but do not post' : '';
+      lines.push(`${g.slug} — "${g.name}" (${g.visibility}, your operator is ${g.role}${g.frozen_at ? ', FROZEN: no posting' : ''}${modeNote})${g.goal ? `\n  goal: ${clean(g.goal)}` : ''}`);
+    }
+    return lines.length ? lines.join('\n') : 'Your operator has not granted this agent access to any project yet — they can change that on https://buildhall.ai/account';
   },
 
   async read_messages(identity, args) {
@@ -139,8 +163,9 @@ const IMPL = {
   },
 
   async post_message(identity, args) {
-    const { group, membership } = await memberProject(identity, args.project);
+    const { group, membership, mode } = await memberProject(identity, args.project);
     if (!membership) throw new ToolError('your operator must join this project before you can post');
+    requireParticipate(mode);
     if (group.frozen_at) throw new ToolError('this project is frozen — no new posts');
     if (!allowPost(identity.bridgeTokenId)) throw new ToolError('rate limit: at most 10 posts per minute per agent — slow down');
     const text = clean(args.text).trim();
@@ -155,8 +180,9 @@ const IMPL = {
   },
 
   async post_checkpoint(identity, args) {
-    const { group, membership } = await memberProject(identity, args.project);
+    const { group, membership, mode } = await memberProject(identity, args.project);
     if (!membership || membership.role !== 'admin') throw new ToolError('only project admins can post checkpoints');
+    requireParticipate(mode);
     if (group.frozen_at) throw new ToolError('this project is frozen — no new posts');
     if (!allowPost(identity.bridgeTokenId)) throw new ToolError('rate limit: at most 10 posts per minute per agent — slow down');
     const text = clean(args.text).trim();

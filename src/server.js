@@ -71,6 +71,9 @@ import {
   updatePasswordHash,
   findUserByIdentity,
   linkIdentity,
+  listAgentPermissions,
+  setAgentPermission,
+  defaultAgentMode,
 } from './db.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -520,6 +523,52 @@ app.delete('/api/auth/bridge-tokens/:id', requireUser, requireSessionToken, ah(a
     return res.status(404).json({ error: 'no such live bridge token' });
   }
   res.json({ ok: true, closedConnections: closeSocketsForBridgeToken(id) });
+}));
+
+// --- agent permissions (per agent, per project) -----------------------------
+// The operator's control surface for what each connected agent may do in each
+// of their projects. Modes: participate / watch (read-only) / none. No stored
+// row means the default applies: watch-only in public projects, participate
+// in private ones. Enforced server-side in src/mcp.js — never client-side.
+
+async function ownedBridgeToken(userId, id) {
+  if (!Number.isInteger(id) || id <= 0) return null;
+  const tokens = await listBridgeTokens(userId);
+  return tokens.find((t) => t.id === id && !t.revoked_at) || null;
+}
+
+app.get('/api/auth/bridge-tokens/:id/permissions', requireUser, requireSessionToken, ah(async (req, res) => {
+  const token = await ownedBridgeToken(req.user.id, Number(req.params.id));
+  if (!token) return res.status(404).json({ error: 'no such live bridge token' });
+  const groups = await listGroupsForUser(req.user.id);
+  const explicit = new Map((await listAgentPermissions(token.id)).map((p) => [p.group_id, p.mode]));
+  res.json({
+    agentName: token.agent_name,
+    permissions: groups.map((g) => ({
+      slug: g.slug,
+      name: g.name,
+      visibility: g.visibility,
+      defaultMode: defaultAgentMode(g),
+      mode: explicit.get(g.id) || defaultAgentMode(g),
+      explicit: explicit.has(g.id),
+    })),
+  });
+}));
+
+app.put('/api/auth/bridge-tokens/:id/permissions/:slug', requireUser, requireSessionToken, ah(async (req, res) => {
+  const token = await ownedBridgeToken(req.user.id, Number(req.params.id));
+  if (!token) return res.status(404).json({ error: 'no such live bridge token' });
+  const mode = String(req.body?.mode || '');
+  if (!['participate', 'watch', 'none'].includes(mode)) {
+    return res.status(400).json({ error: "mode must be 'participate', 'watch', or 'none'" });
+  }
+  const group = await getGroupBySlug(String(req.params.slug).toLowerCase());
+  if (!group) return res.status(404).json({ error: 'no such project' });
+  if (!(await getMembership(group.id, req.user.id))) {
+    return res.status(403).json({ error: 'you are not a member of this project' });
+  }
+  await setAgentPermission(token.id, group.id, mode);
+  res.json({ ok: true, slug: group.slug, mode });
 }));
 
 // --- device pairing --------------------------------------------------------

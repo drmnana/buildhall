@@ -82,6 +82,7 @@ let owner;        // BuildHall user
 let clientId;     // registered OAuth client
 let accessToken;  // bridge token via OAuth
 let refreshToken;
+let agentTokenId;  // the agent's bridge_tokens.id, for the permissions API
 const REDIRECT = 'http://127.0.0.1:41234/callback';
 
 test('unauthenticated /mcp returns 401 with resource metadata pointer', async () => {
@@ -169,6 +170,29 @@ test('tools work end to end: list, post (as agent), read with provenance', async
 
   const projects = await callTool(accessToken, 'list_my_projects', {});
   assert.match(projects.content[0].text, new RegExp(slug));
+  assert.match(projects.content[0].text, /WATCH-ONLY/, 'public project defaults to watch-only');
+
+  // default-safe: posting to a public project is blocked until the human flips it
+  const blocked = await callTool(accessToken, 'post_message', { project: slug, text: 'should not land' });
+  assert.equal(blocked.isError, true);
+  assert.match(blocked.content[0].text, /WATCH-ONLY/i);
+
+  // reading is allowed in watch-only
+  const watchRead = await callTool(accessToken, 'read_messages', { project: slug });
+  assert.equal(watchRead.isError, false);
+
+  // operator flips the agent to participate from the account panel API
+  const toks = await json('/api/auth/bridge-tokens', { headers: { authorization: `Bearer ${owner.token}` } });
+  agentTokenId = toks.body.bridgeTokens.find((t) => !t.revoked_at).id;
+  const matrix = await json(`/api/auth/bridge-tokens/${agentTokenId}/permissions`, { headers: { authorization: `Bearer ${owner.token}` } });
+  const entry = matrix.body.permissions.find((p) => p.slug === slug);
+  assert.equal(entry.mode, 'watch');
+  assert.equal(entry.defaultMode, 'watch');
+  const flip = await json(`/api/auth/bridge-tokens/${agentTokenId}/permissions/${slug}`, {
+    method: 'PUT', headers: { authorization: `Bearer ${owner.token}` },
+    body: JSON.stringify({ mode: 'participate' }),
+  });
+  assert.equal(flip.status, 200, JSON.stringify(flip.body));
 
   const posted = await callTool(accessToken, 'post_message', { project: slug, text: 'hello from the agent​ side' });
   assert.equal(posted.isError, false);
@@ -193,6 +217,38 @@ test('tools work end to end: list, post (as agent), read with provenance', async
   // unknown project is a tool error, not a crash
   const nope = await callTool(accessToken, 'read_messages', { project: 'does-not-exist' });
   assert.equal(nope.isError, true);
+});
+
+test('mode none hides the project; private projects default to participate', async () => {
+  const slug = `mcp-${RUN}`;
+  // none: read blocked, hidden from list
+  await json(`/api/auth/bridge-tokens/${agentTokenId}/permissions/${slug}`, {
+    method: 'PUT', headers: { authorization: `Bearer ${owner.token}` },
+    body: JSON.stringify({ mode: 'none' }),
+  });
+  const denied = await callTool(accessToken, 'read_messages', { project: slug });
+  assert.equal(denied.isError, true);
+  assert.match(denied.content[0].text, /blocked/);
+  const listing = await callTool(accessToken, 'list_my_projects', {});
+  assert.ok(!listing.content[0].text.includes(slug), 'none-mode project hidden from list');
+  // restore participate for the rate-limit test below
+  await json(`/api/auth/bridge-tokens/${agentTokenId}/permissions/${slug}`, {
+    method: 'PUT', headers: { authorization: `Bearer ${owner.token}` },
+    body: JSON.stringify({ mode: 'participate' }),
+  });
+
+  // private project: agent participates by default, no flip needed
+  const priv = `mcp-priv-${RUN}`;
+  await json('/api/groups', { method: 'POST', headers: { authorization: `Bearer ${owner.token}` }, body: JSON.stringify({ slug: priv, name: 'Private Lab', visibility: 'private' }) });
+  const posted = await callTool(accessToken, 'post_message', { project: priv, text: 'private post, default participate' });
+  assert.equal(posted.isError, false, posted.content?.[0]?.text);
+
+  // invalid mode and non-owned token are rejected
+  const bad = await json(`/api/auth/bridge-tokens/${agentTokenId}/permissions/${slug}`, {
+    method: 'PUT', headers: { authorization: `Bearer ${owner.token}` },
+    body: JSON.stringify({ mode: 'yolo' }),
+  });
+  assert.equal(bad.status, 400);
 });
 
 test('agent posting rate limit trips at 10/minute', async () => {

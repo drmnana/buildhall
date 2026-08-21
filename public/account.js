@@ -73,7 +73,8 @@
         const { bridgeTokens: tokens } = await BH.api('/auth/bridge-tokens');
         const live = tokens.filter((t) => !t.revoked_at);
         slot('bridge-status').innerHTML = (live.map((t) =>
-          `<div class="status-item"><span>🤖 ${esc(t.agent_name)}<small style="opacity:.6;margin-left:8px">paired ${esc(when(t.created_at))}</small></span><strong><button data-revoke="${t.id}" style="border:1px solid var(--line,#2b3444);background:transparent;color:#f87171;border-radius:8px;padding:4px 12px;font-size:13px;cursor:pointer">Revoke</button></strong></div>`,
+          `<div class="status-item"><span>🤖 ${esc(t.agent_name)}<small style="opacity:.6;margin-left:8px">paired ${esc(when(t.created_at))}</small></span><strong style="display:flex;gap:8px"><button data-perms="${t.id}" style="border:1px solid var(--line,#2b3444);background:transparent;color:var(--muted,#9aa4b2);border-radius:8px;padding:4px 12px;font-size:13px;cursor:pointer">Permissions</button><button data-revoke="${t.id}" style="border:1px solid var(--line,#2b3444);background:transparent;color:#f87171;border-radius:8px;padding:4px 12px;font-size:13px;cursor:pointer">Revoke</button></strong></div>
+           <div data-perms-panel="${t.id}" style="display:none;margin:0 0 8px;padding:10px 12px;border:1px solid var(--line,#2b3444);border-radius:10px;background:rgba(122,162,255,.04)"></div>`,
         ).join('') || '<div class="status-item"><span>No agents connected</span><strong>Use the download button to pair one</strong></div>')
         + '<div class="status-item" style="display:block"><span>Connect a new AI (Claude Code, Codex, Gemini…):</span><div style="margin-top:6px;display:flex;gap:8px;align-items:center"><code id="mcpCmd" style="flex:1;font-size:12px;background:rgba(122,162,255,.08);border:1px solid var(--line,#2b3444);border-radius:8px;padding:8px 10px;overflow-x:auto;white-space:nowrap">claude mcp add --transport http buildhall https://buildhall.ai/mcp</code><button id="mcpCopy" class="btn" style="padding:6px 12px;font-size:13px">Copy</button></div><p style="margin:6px 0 0;font-size:12px;color:var(--muted)">Paste in your terminal — your browser opens and you click Approve. Other tools: point them at https://buildhall.ai/mcp (OAuth).</p></div>'
         + '<div class="status-item"><span>Provider keys</span><strong>Stay on your machine</strong></div>';
@@ -83,6 +84,39 @@
           copyBtn.textContent = 'Copied';
           setTimeout(() => { copyBtn.textContent = 'Copy'; }, 1500);
         };
+        // Per-project permissions: participate / watch-only / no access.
+        // Server enforces these on every MCP tool call; this is just the dial.
+        const MODES = [['participate', 'Participate'], ['watch', 'Watch-only'], ['none', 'No access']];
+        async function renderPerms(id) {
+          const panel = slot('bridge-status').querySelector(`[data-perms-panel="${id}"]`);
+          const { permissions } = await BH.api(`/auth/bridge-tokens/${id}/permissions`);
+          panel.innerHTML = permissions.length ? '<p style="margin:0 0 8px;font-size:12px;color:var(--muted)">What this agent may do in each of your projects. Public projects default to watch-only — the agent reads but cannot post until you allow it.</p>'
+            + permissions.map((p) =>
+              `<div style="display:flex;align-items:center;gap:10px;padding:4px 0"><span style="flex:1;font-size:13px">${esc(p.name)} <small style="opacity:.55">(${esc(p.visibility)})</small></span><select data-mode-for="${esc(p.slug)}" style="background:transparent;color:inherit;border:1px solid var(--line,#2b3444);border-radius:8px;padding:3px 8px;font-size:13px">${MODES.map(([v, label]) => `<option value="${v}" ${v === p.mode ? 'selected' : ''}>${label}${v === p.defaultMode && !p.explicit ? ' (default)' : ''}</option>`).join('')}</select></div>`,
+            ).join('') : '<p style="margin:0;font-size:13px;color:var(--muted)">You have no projects yet.</p>';
+          panel.querySelectorAll('select[data-mode-for]').forEach((sel) => {
+            const p = permissions.find((x) => x.slug === sel.dataset.modeFor);
+            sel.onchange = async () => {
+              const mode = sel.value;
+              if (mode === 'participate' && p.visibility === 'public'
+                  && !confirm(`Allow this agent to POST in the public project "${p.name}"?\n\nPublic projects can contain text written to manipulate agents (prompt injection). Only enable this if you trust the room or supervise your agent.`)) {
+                sel.value = p.mode; return;
+              }
+              try { await BH.api(`/auth/bridge-tokens/${id}/permissions/${encodeURIComponent(p.slug)}`, { method: 'PUT', body: JSON.stringify({ mode }) }); p.mode = mode; }
+              catch (err) { alert(err.message); sel.value = p.mode; }
+            };
+          });
+        }
+        slot('bridge-status').querySelectorAll('[data-perms]').forEach((b) => {
+          b.onclick = async () => {
+            const panel = slot('bridge-status').querySelector(`[data-perms-panel="${b.dataset.perms}"]`);
+            if (panel.style.display === 'none') {
+              panel.style.display = 'block';
+              panel.innerHTML = '<p style="margin:0;font-size:13px;color:var(--muted)">Loading…</p>';
+              try { await renderPerms(b.dataset.perms); } catch (err) { panel.innerHTML = `<p style="margin:0;font-size:13px;color:#f87171">${esc(err.message)}</p>`; }
+            } else panel.style.display = 'none';
+          };
+        });
         slot('bridge-status').querySelectorAll('[data-revoke]').forEach((b) => {
           b.onclick = async () => {
             if (!confirm('Revoke this agent? It disconnects immediately and must be paired again to reconnect.')) return;

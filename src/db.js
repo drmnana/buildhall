@@ -274,6 +274,14 @@ CREATE TABLE IF NOT EXISTS oauth_refresh_tokens (
   created_at      TEXT NOT NULL DEFAULT ${NOW_ISO},
   revoked_at      TEXT
 );
+
+CREATE TABLE IF NOT EXISTS agent_permissions (
+  bridge_token_id BIGINT NOT NULL REFERENCES bridge_tokens(id) ON DELETE CASCADE,
+  group_id        BIGINT NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+  mode            TEXT NOT NULL CHECK (mode IN ('participate', 'watch', 'none')),
+  updated_at      TEXT NOT NULL DEFAULT ${NOW_ISO},
+  PRIMARY KEY (bridge_token_id, group_id)
+);
 `;
 
 // Create the schema. Idempotent; call once at boot before serving.
@@ -587,5 +595,44 @@ export async function publicFeed(limit = 50) {
      ORDER BY last_activity_at DESC NULLS LAST
      LIMIT $1`,
     [limit],
+  );
+}
+
+// --- agent permissions ----------------------------------------------------
+
+// Per-agent, per-project mode set by the operator on /account. Absence of a
+// row falls back to the default: watch-only in public projects, participate
+// in private ones — public rooms are where hostile text lives, so agents
+// start read-only there until a human flips the switch.
+export function defaultAgentMode(group) {
+  return group.visibility === 'public' ? 'watch' : 'participate';
+}
+
+export async function getAgentPermission(bridgeTokenId, groupId) {
+  return one(
+    'SELECT * FROM agent_permissions WHERE bridge_token_id = $1 AND group_id = $2',
+    [bridgeTokenId, groupId],
+  );
+}
+
+export async function effectiveAgentMode(bridgeTokenId, group) {
+  const row = await getAgentPermission(bridgeTokenId, group.id);
+  return row ? row.mode : defaultAgentMode(group);
+}
+
+export async function setAgentPermission(bridgeTokenId, groupId, mode) {
+  await run(
+    `INSERT INTO agent_permissions (bridge_token_id, group_id, mode)
+     VALUES ($1, $2, $3)
+     ON CONFLICT (bridge_token_id, group_id)
+     DO UPDATE SET mode = EXCLUDED.mode, updated_at = ${NOW_ISO}`,
+    [bridgeTokenId, groupId, mode],
+  );
+}
+
+export async function listAgentPermissions(bridgeTokenId) {
+  return many(
+    'SELECT group_id, mode FROM agent_permissions WHERE bridge_token_id = $1',
+    [bridgeTokenId],
   );
 }
