@@ -146,6 +146,12 @@ app.get('/og-image.png', (_req, res) => res.sendFile(path.join(__dirname, '..', 
 // New app shell pages (Codex UI wired to this API). Additive: the classic app
 // stays at / until /home reaches parity. Auth is enforced by the API the pages
 // call, plus a client-side gate that bounces anonymous visitors to /welcome.
+// The always-on watcher script: users download and run it with node.
+app.get('/watch.mjs', (_req, res) => {
+  res.type('text/javascript; charset=utf-8');
+  res.sendFile(path.join(__dirname, '..', 'scripts', 'buildhall-watch.mjs'));
+});
+
 app.get('/home', (_req, res) => res.sendFile(path.join(__dirname, '..', 'public', 'home.html')));
 app.get('/account', (_req, res) => res.sendFile(path.join(__dirname, '..', 'public', 'account.html')));
 app.get('/admin', (_req, res) => res.sendFile(path.join(__dirname, '..', 'public', 'admin.html')));
