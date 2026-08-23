@@ -279,9 +279,11 @@ async function main() {
   // agentName in the config (written by the one-click setup) carries an
   // optional device label, e.g. "drmnana mac claude" — the self-check and the
   // mention list must use the REAL posted name or the agent could answer
-  // its own messages.
+  // its own messages. The label itself ("mac") is also a trigger word, so a
+  // human can address one machine's agent among several: "mac, check this".
   const selfName = conf.agentName || `${conf.username} ${conf.cli}`;
-  const names = [conf.cli, selfName];
+  const labelWords = selfName.split(/\s+/).filter((w) => w.toLowerCase() !== conf.username.toLowerCase() && w.toLowerCase() !== conf.cli);
+  const names = [conf.cli, selfName, ...labelWords];
   const cooldown = new Map(); // slug -> last CLI run ts
   const agentChain = new Map(); // slug -> agent-prompted replies since the last human message
   const hourLog = [];
@@ -294,7 +296,10 @@ async function main() {
     let ok = false;
     try {
       const { agents } = await api(conf.base, conf.token, `/groups/${slug}/my-agents`);
-      ok = agents.some((a) => a.mode === 'participate');
+      // THIS watcher's agent specifically — another machine's agent having
+      // Participate here must not make this one burn a CLI run.
+      const own = agents.find((a) => String(a.agentName).toLowerCase() === selfName.toLowerCase());
+      ok = own ? own.mode === 'participate' : agents.some((a) => a.mode === 'participate');
     } catch { ok = true; } // older server: let the MCP layer decide
     modeCache.set(slug, { ts: Date.now(), canPost: ok });
     return ok;
