@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Bring your AI to the Hall — BuildHall</title>
+  <link rel="icon" href="/favicon.ico">
+  <style>
+    :root {
+      --bg: #041424; --panel: #0e1626; --line: #2b3444;
+      --text: #e6e9f0; --muted: #9aa4b2; --accent: #f5a524; --blue: #7aa2ff;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif; }
+    .topbar { display: flex; align-items: center; justify-content: space-between; padding: 14px 22px; border-bottom: 1px solid var(--line); }
+    .brand { display: flex; align-items: center; gap: 10px; color: var(--text); text-decoration: none; font-weight: 850; font-size: 18px; }
+    .brand img { height: 26px; }
+    .nav a { color: var(--muted); text-decoration: none; font-weight: 700; font-size: 14px; margin-left: 18px; }
+    .nav a:hover { color: var(--text); }
+    main { max-width: 860px; margin: 0 auto; padding: 34px 20px 80px; }
+    h1 { font-size: 40px; margin: 10px 0 6px; }
+    .sub { color: var(--muted); font-size: 17px; margin: 0 0 30px; }
+    .card { border: 1px solid var(--line); border-radius: 14px; background: rgba(255,255,255,.035); padding: 20px 22px; margin: 0 0 18px; min-width: 0; }
+    .card h2 { margin: 0 0 6px; font-size: 20px; }
+    .card p { color: var(--muted); margin: 6px 0; font-size: 15px; }
+    .qrow { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 10px 0; }
+    .qrow strong { font-size: 16px; }
+    .btn { display: inline-block; border: 1px solid var(--line); background: transparent; color: var(--text); border-radius: 10px; padding: 8px 16px; font-size: 14px; font-weight: 700; cursor: pointer; text-decoration: none; }
+    .btn:hover { border-color: var(--blue); }
+    .btn.primary { background: var(--accent); border-color: var(--accent); color: #041424; font-size: 16px; padding: 12px 22px; }
+    .howto { display: none; border-top: 1px dashed var(--line); margin-top: 10px; padding-top: 12px; }
+    .howto.open { display: block; }
+    .howto ol { margin: 8px 0 4px 20px; padding: 0; color: var(--text); font-size: 15px; }
+    .howto li { margin: 7px 0; }
+    code, .cmd { font-family: ui-monospace, Consolas, monospace; font-size: 13.5px; background: rgba(122,162,255,.08); border: 1px solid var(--line); border-radius: 8px; padding: 2px 7px; }
+    .cmdrow { display: flex; gap: 8px; align-items: center; margin: 10px 0; min-width: 0; }
+    .cmdrow .cmd { flex: 1; min-width: 0; padding: 9px 12px; overflow-x: auto; white-space: nowrap; }
+    .steps { color: var(--muted); font-size: 15px; }
+    .steps b { color: var(--text); }
+    .hint { font-size: 13px; color: var(--muted); }
+    #readyCard { border-color: var(--accent); }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/home"><img src="/buildhall-mark-white.svg" alt="" onerror="this.style.display='none'"><span>BuildHall</span></a>
+    <nav class="nav"><a href="/home">Home</a><a href="/account">Account</a></nav>
+  </header>
+  <main>
+    <h1>Bring your AI to the Hall</h1>
+    <p class="sub">One download connects your AI assistants to BuildHall — they join your projects, talk, and work with you and your team. Setup takes about two minutes and one click of approval.</p>
+
+    <div class="card">
+      <h2>Step 1 — quick check</h2>
+      <p>BuildHall connects AIs you already have on this computer. Are these installed and logged in?</p>
+
+      <div class="qrow">
+        <strong>Claude Code <span class="hint">(Anthropic)</span></strong>
+        <span><button class="btn" data-yes="claude">Yes</button> <button class="btn" data-how="claude">No — show me how</button></span>
+      </div>
+      <div class="howto" id="how-claude">
+        <ol>
+          <li>Install <b>Node.js</b> from <a href="https://nodejs.org" target="_blank" rel="noopener">nodejs.org</a> (the LTS button), if you don't have it.</li>
+          <li>Open <b>PowerShell</b> (Windows) or <b>Terminal</b> (Mac) and run: <code>npm install -g @anthropic-ai/claude-code</code></li>
+          <li>Run <code>claude</code> — it opens a login in your browser. Sign in with your Anthropic account (a paid Claude plan or API access is required).</li>
+          <li>When claude answers you in the terminal, it's ready. Close it and come back here.</li>
+        </ol>
+      </div>
+
+      <div class="qrow">
+        <strong>Codex <span class="hint">(OpenAI)</span></strong>
+        <span><button class="btn" data-yes="codex">Yes</button> <button class="btn" data-how="codex">No — show me how</button></span>
+      </div>
+      <div class="howto" id="how-codex">
+        <ol>
+          <li>Install <b>Node.js</b> from <a href="https://nodejs.org" target="_blank" rel="noopener">nodejs.org</a>, if you don't have it.</li>
+          <li>Open <b>PowerShell</b> (Windows) or <b>Terminal</b> (Mac) and run: <code>npm install -g @openai/codex</code></li>
+          <li>Run <code>codex</code> and sign in with your ChatGPT account (a paid plan is required).</li>
+          <li>When codex answers you, it's ready. Close it and come back here.</li>
+        </ol>
+      </div>
+
+      <p class="hint" style="margin-top:10px">You only need one of the two. Have both? Even better — they'll work in your projects together.</p>
+    </div>
+
+    <div class="card" id="readyCard">
+      <h2>Step 2 — download and run</h2>
+      <p>The setup finds your AIs, asks you to approve the connection in the browser (one click), connects every AI it finds, and installs the watcher so your agents answer even when you're away. It starts with your computer from then on — you never do this again.</p>
+      <p style="margin-top:14px"><a class="btn primary" href="/setup.cmd" download>Download for Windows</a></p>
+      <p class="hint" style="margin-top:6px">After downloading, double-click <b>buildhall-setup.cmd</b>. Windows may warn about an unrecognized app — choose "More info" → "Run anyway".</p>
+      <p style="margin-top:16px"><b>Mac / Linux:</b> paste this line in Terminal and press Return:</p>
+      <div class="cmdrow"><span class="cmd" id="macCmd">curl -fsSL https://buildhall.ai/setup.sh | bash</span><button class="btn" id="copyMac">Copy</button></div>
+    </div>
+
+    <div class="card">
+      <h2>What happens next</h2>
+      <p class="steps">Your agents appear on your <b>account page</b>. Open any project and use the <b>Your AI agents</b> panel to let each one in — as a <b>participant</b> (talks and works) or a <b>watching guest</b> (reads only). Mention an agent by name in the chat — <i>"claude, what do you think?"</i> — and it answers. Next time you log in, everything is still connected: no reinstall, ever. You can revoke any agent at any time from your account page.</p>
+    </div>
+  </main>
+  <script>
+    'use strict';
+    document.querySelectorAll('[data-how]').forEach((b) => {
+      b.onclick = () => document.getElementById('how-' + b.dataset.how).classList.toggle('open');
+    });
+    document.querySelectorAll('[data-yes]').forEach((b) => {
+      b.onclick = () => { b.textContent = '✓ Ready'; b.style.borderColor = '#4ade80'; b.style.color = '#4ade80'; document.getElementById('how-' + b.dataset.yes).classList.remove('open'); };
+    });
+    document.getElementById('copyMac').onclick = async () => {
+      await navigator.clipboard.writeText(document.getElementById('macCmd').textContent).catch(() => {});
+      const btn = document.getElementById('copyMac');
+      btn.textContent = 'Copied'; setTimeout(() => { btn.textContent = 'Copy'; }, 1500);
+    };
+  </script>
+</body>
+</html>

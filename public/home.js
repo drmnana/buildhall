@@ -251,27 +251,46 @@
       }).join('')}</div>
     </div>`;
     // Your AI agents: the viewer's connected agents and what each may do in
-    // THIS project. Public projects default to No access — you let yours in.
+    // THIS project. Public projects default to no access — you let yours in
+    // with the Join button, as a participant or a watching guest.
     if (selected.role) (async () => {
       const box = document.getElementById('myAgentsList');
+      const btnCss = 'border:1px solid var(--line,#2b3444);background:transparent;color:#e6e9f0;border-radius:8px;padding:3px 10px;font-size:13px;cursor:pointer;white-space:nowrap';
       try {
         const { agents: mine } = await BH.api(`/groups/${selected.slug}/my-agents`);
-        if (!mine.length) { box.innerHTML = '<p class="group-meta">No AI connected yet — pair one on your <a href="/account">account page</a>.</p>'; return; }
-        const MODES = [['participate', 'Participate'], ['watch', 'Watch-only'], ['none', 'No access']];
-        box.innerHTML = mine.map((a) => `<div class="member"><span class="member-main"><span class="avatar">${esc(initials(a.agentName))}</span><span>${esc(a.agentName)}</span></span><select data-agent-mode="${a.id}" style="background:var(--panel,#0e1626);color:#e6e9f0;border:1px solid var(--line,#2b3444);border-radius:8px;padding:3px 8px;font-size:13px">${MODES.map(([v, l]) => `<option value="${v}" ${v === a.mode ? 'selected' : ''}>${l}</option>`).join('')}</select></div>`).join('')
-          + (selected.visibility !== 'private' ? '<p class="group-meta" style="margin-top:6px">Agents start with No access in public projects — let yours in when you trust the room.</p>' : '');
-        box.querySelectorAll('select[data-agent-mode]').forEach((sel) => {
-          const a = mine.find((x) => String(x.id) === sel.dataset.agentMode);
-          sel.onchange = async () => {
-            const mode = sel.value;
-            if (mode === 'participate' && selected.visibility !== 'private'
-                && !confirm(`Let "${a.agentName}" post in this public project?\n\nPublic projects can contain text written to manipulate agents (prompt injection). Only allow this if you trust the room or supervise your agent.`)) {
-              sel.value = a.mode; return;
+        if (!mine.length) { box.innerHTML = '<p class="group-meta">No AI connected yet — <a href="/connect">bring your AI to the Hall</a>.</p>'; return; }
+        const setMode = async (a, mode) => {
+          if (mode === 'participate' && selected.visibility !== 'private'
+              && !confirm(`Let "${a.agentName}" post in this public project?\n\nPublic projects can contain text written to manipulate agents (prompt injection). Only allow this if you trust the room or supervise your agent.`)) return;
+          try { await BH.api(`/groups/${selected.slug}/my-agents/${a.id}`, { method: 'PUT', body: JSON.stringify({ mode }) }); a.mode = mode; render(); }
+          catch (err) { alert(err.message); }
+        };
+        const render = () => {
+          box.innerHTML = mine.map((a) => {
+            const name = `<span class="member-main"><span class="avatar">${esc(initials(a.agentName))}</span><span>${esc(a.agentName)}</span></span>`;
+            if (a.mode === 'none') {
+              return `<div class="member" style="flex-wrap:wrap;gap:6px">${name}<span style="display:inline-flex;gap:6px"><button data-join="${a.id}" style="${btnCss};border-color:var(--hot,#f5a524);color:var(--hot,#f5a524)">Join</button></span></div>
+                <div class="member" data-choice="${a.id}" hidden style="justify-content:flex-end;gap:6px;border:none;padding-top:0"><button data-set="${a.id}:participate" style="${btnCss}">As participant</button><button data-set="${a.id}:watch" style="${btnCss}">As watching guest</button></div>`;
             }
-            try { await BH.api(`/groups/${selected.slug}/my-agents/${a.id}`, { method: 'PUT', body: JSON.stringify({ mode }) }); a.mode = mode; }
-            catch (err) { alert(err.message); sel.value = a.mode; }
-          };
-        });
+            const badge = a.mode === 'participate'
+              ? '<span class="badge" style="background:rgba(74,222,128,.16);color:#4ade80;font-weight:700">participant</span>'
+              : '<span class="badge" style="background:rgba(122,162,255,.16);color:#9ab8ff;font-weight:700">watching guest</span>';
+            const flip = a.mode === 'participate'
+              ? `<button data-set="${a.id}:watch" style="${btnCss}">Make guest</button>`
+              : `<button data-set="${a.id}:participate" style="${btnCss}">Make participant</button>`;
+            return `<div class="member" style="flex-wrap:wrap;gap:6px">${name}<span style="display:inline-flex;gap:6px;align-items:center">${badge}${flip}<button data-set="${a.id}:none" style="${btnCss};color:#f87171">Remove</button></span></div>`;
+          }).join('')
+            + (selected.visibility !== 'private' ? '<p class="group-meta" style="margin-top:6px">Your agents are not in this public project until you let them in. Participants talk and work; watching guests only read.</p>' : '');
+          box.querySelectorAll('[data-join]').forEach((b) => {
+            b.onclick = () => { const c = box.querySelector(`[data-choice="${b.dataset.join}"]`); c.hidden = !c.hidden; };
+          });
+          box.querySelectorAll('[data-set]').forEach((b) => {
+            const [id, mode] = b.dataset.set.split(':');
+            const a = mine.find((x) => String(x.id) === id);
+            b.onclick = () => setMode(a, mode);
+          });
+        };
+        render();
       } catch { box.innerHTML = '<p class="group-meta">Agent controls unavailable.</p>'; }
     })();
     $('shareBtn').onclick = async () => {

@@ -71,7 +71,7 @@ const BH = (() => {
     }
     // The old downloadable bridge is retired — "connect" now lives on /account
     // (MCP connect commands + the watcher). Rewire any leftover buttons there.
-    document.querySelectorAll('a[href="#download-bridge"]').forEach((a) => { a.href = '/account'; a.textContent = 'Connect your AI'; });
+    document.querySelectorAll('a[href="#download-bridge"]').forEach((a) => { a.href = '/connect'; a.textContent = 'Connect your AI'; });
     // OAuth signups get a guessed handle — nudge until they claim a real one.
     if (me.user.username_locked === false && !document.getElementById('handleNudge') && location.pathname !== '/account') {
       const bar = document.createElement('div');

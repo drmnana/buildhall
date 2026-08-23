@@ -60,11 +60,11 @@ function expiryISO(days) {
 
 // --- sessions --------------------------------------------------------------
 
-export async function createSession(userId) {
+export async function createSession(userId, ttlDays = SESSION_TTL_DAYS) {
   const { raw, digest } = mintToken();
   const row = await one(
     'INSERT INTO sessions (user_id, token_hash, expires_at) VALUES ($1, $2, $3) RETURNING id',
-    [userId, digest, expiryISO(SESSION_TTL_DAYS)],
+    [userId, digest, expiryISO(ttlDays)],
   );
   // Every login path (password, verify, reset, OAuth, pairing) funnels through
   // here, and every login screen says "By continuing you agree to the AUP" —

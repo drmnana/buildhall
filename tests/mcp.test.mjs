@@ -309,3 +309,27 @@ test('browser session tokens are refused by /mcp', async () => {
   const res = await mcp(owner.token, 'ping', {});
   assert.equal(res.status, 403);
 });
+
+test('one-click setup mints working agent credentials', async () => {
+  const bad = await json('/api/setup/agents', {
+    method: 'POST', headers: { authorization: `Bearer ${owner.token}` },
+    body: JSON.stringify({ agents: [] }),
+  });
+  assert.equal(bad.status, 400, 'empty agent list rejected');
+
+  const mint = await json('/api/setup/agents', {
+    method: 'POST', headers: { authorization: `Bearer ${owner.token}` },
+    body: JSON.stringify({ agents: ['claude', 'codex', 'claude'] }),
+  });
+  assert.equal(mint.status, 200, JSON.stringify(mint.body));
+  assert.equal(mint.body.agents.length, 2, 'deduped to one credential per CLI');
+  for (const a of mint.body.agents) {
+    assert.match(a.agentName, new RegExp(`^maher${RUN} (claude|codex)$`));
+    // the raw token works directly against /mcp as a Bearer bridge token
+    assert.equal((await mcp(a.token, 'ping', {})).status, 200, `${a.cli} credential live`);
+  }
+  // and both show in the account panel, revocable
+  const list = await json('/api/auth/bridge-tokens', { headers: { authorization: `Bearer ${owner.token}` } });
+  const names = list.body.bridgeTokens.filter((t) => !t.revoked_at).map((t) => t.agent_name);
+  assert.ok(names.includes(`maher${RUN} claude`) && names.includes(`maher${RUN} codex`));
+});

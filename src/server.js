@@ -152,6 +152,24 @@ app.get('/watch.mjs', (_req, res) => {
   res.sendFile(path.join(__dirname, '..', 'scripts', 'buildhall-watch.mjs'));
 });
 
+// One-click setup ("Bring your AI to the Hall"): a double-click .cmd for
+// Windows, a curl|bash one-liner for macOS/Linux, both bootstrapping the
+// cross-platform node script.
+app.get('/setup.cmd', (_req, res) => {
+  res.type('application/octet-stream');
+  res.set('content-disposition', 'attachment; filename="buildhall-setup.cmd"');
+  res.sendFile(path.join(__dirname, '..', 'scripts', 'setup.cmd'));
+});
+app.get('/setup.sh', (_req, res) => {
+  res.type('text/x-shellscript; charset=utf-8');
+  res.sendFile(path.join(__dirname, '..', 'scripts', 'setup.sh'));
+});
+app.get('/setup.mjs', (_req, res) => {
+  res.type('text/javascript; charset=utf-8');
+  res.sendFile(path.join(__dirname, '..', 'scripts', 'buildhall-setup.mjs'));
+});
+
+app.get('/connect', (_req, res) => res.sendFile(path.join(__dirname, '..', 'public', 'connect.html')));
 app.get('/home', (_req, res) => res.sendFile(path.join(__dirname, '..', 'public', 'home.html')));
 app.get('/account', (_req, res) => res.sendFile(path.join(__dirname, '..', 'public', 'account.html')));
 app.get('/admin', (_req, res) => res.sendFile(path.join(__dirname, '..', 'public', 'admin.html')));
@@ -532,6 +550,26 @@ app.delete('/api/auth/bridge-tokens/:id', requireUser, requireSessionToken, ah(a
   res.json({ ok: true, closedConnections: closeSocketsForBridgeToken(id) });
 }));
 
+// --- one-click setup --------------------------------------------------------
+// The "Bring your AI to the Hall" script pairs once (device-code flow), then
+// calls this with the paired session to mint one agent credential per CLI it
+// found on the machine. Each credential lives on its own dedicated long-lived
+// session, so browser logouts never disconnect agents, and the account-panel
+// Revoke still kills any of them individually. Raw tokens are returned ONCE
+// and go straight into the CLIs' MCP config on the user's machine.
+app.post('/api/setup/agents', requireUser, requireSessionToken, ah(async (req, res) => {
+  const wanted = Array.isArray(req.body?.agents) ? req.body.agents.map((a) => String(a).toLowerCase()) : [];
+  const clis = [...new Set(wanted.filter((a) => /^[a-z0-9_-]{2,16}$/.test(a)))].slice(0, 4);
+  if (!clis.length) return res.status(400).json({ error: 'agents must be a list of CLI names, e.g. ["claude","codex"]' });
+  const agents = [];
+  for (const cli of clis) {
+    const session = await createSession(req.user.id, 180);
+    const { token, bridgeTokenId } = await createBridgeToken(session.sessionId, req.user.id, `${req.user.username} ${cli}`);
+    agents.push({ cli, agentName: `${req.user.username} ${cli}`, token, bridgeTokenId });
+  }
+  res.json({ username: req.user.username, agents });
+}));
+
 // --- agent permissions (per agent, per project) -----------------------------
 // The operator's control surface for what each connected agent may do in each
 // of their projects. Modes: participate / watch (read-only) / none. No stored
@@ -631,8 +669,9 @@ app.post('/api/pair/:code/approve', requireUser, requireSessionToken, ah(async (
   if (!row || row.expires_at <= new Date().toISOString()) return res.status(404).json({ error: 'pairing expired or unknown — start again from the bridge' });
   if (row.session_token || row.claimed_at) return res.status(409).json({ error: 'already approved' });
   // A fresh session, distinct from the browser's: signing out of the browser
-  // later must not disconnect the bridge.
-  const { token } = await createSession(req.user.id);
+  // later must not disconnect the paired device. Long-lived (180 days) so
+  // the watcher and one-click setup stay connected without re-pairing.
+  const { token } = await createSession(req.user.id, 180);
   await pool.query('UPDATE pairings SET session_token = $1, username = $2 WHERE id = $3', [token, req.user.username, row.id]);
   res.json({ ok: true });
 }));
