@@ -685,9 +685,9 @@ function showInstaller(isMac) {
   if (dlWin) dlWin.hidden = !!isMac;
   if (dlMac) dlMac.hidden = !isMac;
 }
-const looksMac = /Mac|iP(hone|ad|od)/i.test(navigator.platform || '')
-  || /Mac OS X/i.test(navigator.userAgent || '');
-showInstaller(looksMac);
+// The old per-OS bridge installers are retired — connecting an AI is the same
+// MCP flow on every OS, explained on /account.
+showInstaller(false);
 $('#show-mac')?.addEventListener('click', (e) => { e.preventDefault(); showInstaller(true); });
 $('#show-win')?.addEventListener('click', (e) => { e.preventDefault(); showInstaller(false); });
 $('#copy-cmd')?.addEventListener('click', async () => {

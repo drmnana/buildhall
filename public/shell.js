@@ -69,7 +69,9 @@ const BH = (() => {
         bridgeEl.innerHTML = `<span class="status-dot"${live ? '' : ' style="background:#94a3b8;box-shadow:none"'}></span><span>${live ? `${live} agent${live === 1 ? '' : 's'} paired` : 'No agents paired'}</span>`;
       } catch { bridgeEl.innerHTML = '<span class="status-dot" style="background:#94a3b8;box-shadow:none"></span><span>Bridge status unavailable</span>'; }
     }
-    document.querySelectorAll('a[href="#download-bridge"]').forEach((a) => { a.href = '/download/bridge-setup.cmd'; });
+    // The old downloadable bridge is retired — "connect" now lives on /account
+    // (MCP connect commands + the watcher). Rewire any leftover buttons there.
+    document.querySelectorAll('a[href="#download-bridge"]').forEach((a) => { a.href = '/account'; a.textContent = 'Connect your AI'; });
     // OAuth signups get a guessed handle — nudge until they claim a real one.
     if (me.user.username_locked === false && !document.getElementById('handleNudge') && location.pathname !== '/account') {
       const bar = document.createElement('div');

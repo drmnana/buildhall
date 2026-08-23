@@ -138,8 +138,6 @@
       }
     }
     await renderBridgePanel();
-    const dl = slot('bridge-status').parentElement.querySelector('.btn');
-    if (dl) dl.onclick = () => { location.href = '/download/bridge-setup.cmd'; };
 
     // Interests power nothing yet — say so instead of showing fake tags.
     slot('user-interests').innerHTML = '<span class="pill" style="opacity:.6">Interest-based suggestions are coming soon</span>';

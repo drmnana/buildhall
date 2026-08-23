@@ -139,21 +139,13 @@
 
         <!-- Windows: a downloadable setup file works fine -->
         <div id="dl-win">
-          <a class="btn primary dl" id="dl-bridge" href="/download/bridge-setup.cmd" download>Download AI Bridge</a>
-          <p class="hint dl-alt">On a Mac? <a id="show-mac" href="#">macOS instructions</a></p>
+          <a class="btn primary dl" id="dl-bridge" href="/account">Connect your AI</a>
+          <p class="hint dl-alt">One command in your terminal, approve in the browser — Windows, Mac or Linux.</p>
         </div>
 
         <!-- macOS: paste one line in Terminal. Downloaded .command files are
              blocked by Gatekeeper and lose their run permission, so this is the
              reliable path. -->
-        <div id="dl-mac" hidden>
-          <p class="hint">Open <strong>Terminal</strong>, paste this line, and press Return:</p>
-          <div class="cmdbox">
-            <code id="mac-cmd">curl -fsSL https://buildhall.ai/download/bridge-mac.command | bash</code>
-            <button type="button" id="copy-cmd" class="btn small">Copy</button>
-          </div>
-          <p class="hint">macOS blocks downloaded apps that aren't Apple-signed, so double-clicking a file won't work — this one line installs it cleanly. <a id="show-win" href="#">Windows version</a></p>
-        </div>
       </section>
       <section class="card" id="members-card" hidden>
         <h2>Members</h2>
