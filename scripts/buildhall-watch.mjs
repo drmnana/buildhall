@@ -9,6 +9,11 @@
 //              --hourly N   max CLI runs per hour (default 20)
 //              --cli claude|codex   which CLI this watcher drives (own config
 //                           per CLI — run one watcher per agent, side by side)
+//              --install    make this watcher start with your computer and run
+//                           in the background, no window (pair once first);
+//                           remembers the flags you pass alongside it
+//              --uninstall  remove the background watcher again
+//   Background logs: ~/.buildhall/watch-<cli>.log
 //   Overnight multi-agent grind:  node buildhall-watch.mjs --all --chain 100 --hourly 60
 //
 // What it does: polls the BuildHall projects you belong to; when a new HUMAN
@@ -25,12 +30,12 @@
 //
 // First run pairs this watcher with your account in the browser (no token
 // copy-paste) and asks which CLI to drive. Config: ~/.buildhall/watch.json
-import { spawn } from 'node:child_process';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { spawn, execSync } from 'node:child_process';
+import { mkdirSync, readFileSync, writeFileSync, appendFileSync, unlinkSync, existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline/promises';
-import { pathToFileURL } from 'node:url';
+import { pathToFileURL, fileURLToPath } from 'node:url';
 
 const POLL_MS = 10_000;
 const COOLDOWN_MS = 60_000;       // per project
@@ -141,13 +146,78 @@ function runCli(conf, prompt) {
     const cmd = isClaude
       ? 'claude -p --allowedTools mcp__buildhall__post_message,mcp__buildhall__read_messages,mcp__buildhall__list_my_projects'
       : 'codex exec -';
-    const child = spawn(cmd, { shell: true, stdio: ['pipe', 'inherit', 'inherit'] });
+    const child = spawn(cmd, { shell: true, stdio: ['pipe', 'pipe', 'pipe'] });
+    child.stdout.on('data', (d) => console.log(`[${conf.cli}] ${String(d).trimEnd()}`));
+    child.stderr.on('data', (d) => console.error(`[${conf.cli}] ${String(d).trimEnd()}`));
     const timer = setTimeout(() => { console.log('[watch] CLI run timed out, killing'); child.kill('SIGKILL'); }, CLI_TIMEOUT_MS);
     child.on('exit', (code) => { clearTimeout(timer); resolve(code ?? -1); });
     child.on('error', (err) => { clearTimeout(timer); console.error(`[watch] could not launch ${conf.cli}: ${err.message}`); resolve(-1); });
     child.stdin.write(prompt);
     child.stdin.end();
   });
+}
+
+// --- background install ----------------------------------------------------
+// Makes the watcher start with the computer, hidden, surviving reboots.
+// Windows: an invisible .vbs launcher in the user's Startup folder (no admin).
+// macOS: a launchd LaunchAgent (KeepAlive restarts it if it dies).
+// Linux: a systemd user unit. Pair interactively ONCE before installing —
+// a hidden process cannot open the approval page for you.
+const SCRIPT_PATH = fileURLToPath(import.meta.url);
+
+function serviceBits(cli, extraArgs) {
+  const args = ['--cli', cli, ...extraArgs];
+  const label = `ai.buildhall.watch-${cli}`;
+  return { args, label, node: process.execPath };
+}
+
+function installService(cli, extraArgs) {
+  const { args, label, node } = serviceBits(cli, extraArgs);
+  if (process.platform === 'win32') {
+    const startup = join(process.env.APPDATA || join(homedir(), 'AppData', 'Roaming'), 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup');
+    const vbsPath = join(startup, `buildhall-watch-${cli}.vbs`);
+    const vbs = `CreateObject("Wscript.Shell").Run """${node}"" ""${SCRIPT_PATH}"" ${args.join(' ')}", 0, False\r\n`;
+    writeFileSync(vbsPath, vbs);
+    spawn('wscript', [vbsPath], { detached: true, stdio: 'ignore' }).unref();
+    return `installed: starts with Windows (Startup folder) and is now running in the background.\n  launcher: ${vbsPath}\n  logs:     ${join(CONF_DIR, `watch-${cli}.log`)}\n  remove:   node buildhall-watch.mjs --uninstall --cli ${cli}`;
+  }
+  if (process.platform === 'darwin') {
+    const dir = join(homedir(), 'Library', 'LaunchAgents');
+    mkdirSync(dir, { recursive: true });
+    const plistPath = join(dir, `${label}.plist`);
+    const xml = `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict>\n  <key>Label</key><string>${label}</string>\n  <key>ProgramArguments</key><array>\n${[node, SCRIPT_PATH, ...args].map((a) => `    <string>${a}</string>`).join('\n')}\n  </array>\n  <key>RunAtLoad</key><true/>\n  <key>KeepAlive</key><true/>\n</dict></plist>\n`;
+    writeFileSync(plistPath, xml);
+    try { execSync(`launchctl unload ${JSON.stringify(plistPath)} 2>/dev/null`); } catch { /* not loaded */ }
+    execSync(`launchctl load -w ${JSON.stringify(plistPath)}`);
+    return `installed: starts with macOS (launchd, auto-restarts) and is now running.\n  agent: ${plistPath}\n  logs:  ${join(CONF_DIR, `watch-${cli}.log`)}\n  remove: node buildhall-watch.mjs --uninstall --cli ${cli}`;
+  }
+  // linux: systemd user unit
+  const dir = join(homedir(), '.config', 'systemd', 'user');
+  mkdirSync(dir, { recursive: true });
+  const unitPath = join(dir, `${label}.service`);
+  writeFileSync(unitPath, `[Unit]\nDescription=BuildHall watcher (${cli})\n\n[Service]\nExecStart=${node} ${SCRIPT_PATH} ${args.join(' ')}\nRestart=always\nRestartSec=10\n\n[Install]\nWantedBy=default.target\n`);
+  execSync(`systemctl --user daemon-reload && systemctl --user enable --now ${label}.service`);
+  return `installed: systemd user service ${label} running.\n  logs: ${join(CONF_DIR, `watch-${cli}.log`)} (also journalctl --user -u ${label})\n  remove: node buildhall-watch.mjs --uninstall --cli ${cli}`;
+}
+
+function uninstallService(cli) {
+  const { label } = serviceBits(cli, []);
+  if (process.platform === 'win32') {
+    const startup = join(process.env.APPDATA || join(homedir(), 'AppData', 'Roaming'), 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup');
+    const vbsPath = join(startup, `buildhall-watch-${cli}.vbs`);
+    if (existsSync(vbsPath)) unlinkSync(vbsPath);
+    return `removed the startup launcher. A watcher already running in the background keeps running until you log out or end the node process in Task Manager.`;
+  }
+  if (process.platform === 'darwin') {
+    const plistPath = join(homedir(), 'Library', 'LaunchAgents', `${label}.plist`);
+    try { execSync(`launchctl unload -w ${JSON.stringify(plistPath)} 2>/dev/null`); } catch { /* not loaded */ }
+    if (existsSync(plistPath)) unlinkSync(plistPath);
+    return 'unloaded and removed the launch agent.';
+  }
+  const unitPath = join(homedir(), '.config', 'systemd', 'user', `${label}.service`);
+  try { execSync(`systemctl --user disable --now ${label}.service 2>/dev/null`); } catch { /* not enabled */ }
+  if (existsSync(unitPath)) unlinkSync(unitPath);
+  return 'stopped and removed the systemd user service.';
 }
 
 async function main() {
@@ -171,11 +241,39 @@ async function main() {
   const baseArg = args[args.indexOf('--base') + 1];
   const base = (args.includes('--base') && baseArg ? baseArg : 'https://buildhall.ai').replace(/\/$/, '');
 
+  if (args.includes('--uninstall')) {
+    console.log(uninstallService(cliArg || 'claude'));
+    return;
+  }
+  if (args.includes('--install')) {
+    const cli = cliArg || 'claude';
+    if (!cliArg) confPath = join(CONF_DIR, 'watch.json');
+    const existing = loadConf();
+    if (!existing || existing.cli !== cli) {
+      console.error(`Pair first (a hidden background process cannot open the approval page):\n  node buildhall-watch.mjs --cli ${cli}\nthen Ctrl-C it and re-run with --install.`);
+      process.exit(1);
+    }
+    const extra = args.filter((a, i) => a !== '--install' && !(a === '--cli' || (i > 0 && args[i - 1] === '--cli')));
+    console.log(installService(cli, extra));
+    return;
+  }
+
   let conf = loadConf();
   if (conf && cliArg && conf.cli !== cliArg) conf = null; // config belongs to another CLI — re-pair
   if (!conf || conf.base !== base) conf = await setup(base, cliArg);
   try { await api(conf.base, conf.token, '/auth/me'); } catch (e) {
     if (e.status === 401) { console.log('[watch] token expired — pairing again'); conf = await setup(base, cliArg); } else throw e;
+  }
+
+  // Everything also goes to a log file, so a hidden background watcher can
+  // still be debugged: ~/.buildhall/watch-<cli>.log
+  const logPath = join(CONF_DIR, `watch-${conf.cli}.log`);
+  for (const k of ['log', 'error']) {
+    const orig = console[k].bind(console);
+    console[k] = (...a) => {
+      orig(...a);
+      try { appendFileSync(logPath, `${new Date().toISOString()} ${a.join(' ')}\n`); } catch { /* log is best-effort */ }
+    };
   }
 
   const names = [conf.cli, `${conf.username} ${conf.cli}`];
