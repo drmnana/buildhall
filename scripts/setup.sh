@@ -13,4 +13,6 @@ if ! command -v node >/dev/null 2>&1; then
 fi
 TMPFILE="$(mktemp -t buildhall-setup.XXXXXX.mjs)"
 curl -fsSL https://buildhall.ai/setup.mjs -o "$TMPFILE"
-node "$TMPFILE"
+# When run via `curl | bash`, stdin is the pipe — reattach the terminal so
+# the setup can ask its questions (device name).
+if [ -t 0 ]; then node "$TMPFILE"; else node "$TMPFILE" < /dev/tty; fi

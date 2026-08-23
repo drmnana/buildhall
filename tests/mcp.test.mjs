@@ -332,4 +332,16 @@ test('one-click setup mints working agent credentials', async () => {
   const list = await json('/api/auth/bridge-tokens', { headers: { authorization: `Bearer ${owner.token}` } });
   const names = list.body.bridgeTokens.filter((t) => !t.revoked_at).map((t) => t.agent_name);
   assert.ok(names.includes(`maher${RUN} claude`) && names.includes(`maher${RUN} codex`));
+
+  // a device label lands in the agent name: "user mac claude"
+  const labeled = await json('/api/setup/agents', {
+    method: 'POST', headers: { authorization: `Bearer ${owner.token}` },
+    body: JSON.stringify({ agents: ['claude'], label: 'mac' }),
+  });
+  assert.equal(labeled.body.agents[0].agentName, `maher${RUN} mac claude`);
+  const badLabel = await json('/api/setup/agents', {
+    method: 'POST', headers: { authorization: `Bearer ${owner.token}` },
+    body: JSON.stringify({ agents: ['claude'], label: 'no spaces!' }),
+  });
+  assert.equal(badLabel.status, 400, 'invalid label rejected');
 });

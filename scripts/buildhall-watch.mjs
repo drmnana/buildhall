@@ -276,8 +276,12 @@ async function main() {
     };
   }
 
-  const names = [conf.cli, `${conf.username} ${conf.cli}`];
-  const selfName = `${conf.username} ${conf.cli}`;
+  // agentName in the config (written by the one-click setup) carries an
+  // optional device label, e.g. "drmnana mac claude" — the self-check and the
+  // mention list must use the REAL posted name or the agent could answer
+  // its own messages.
+  const selfName = conf.agentName || `${conf.username} ${conf.cli}`;
+  const names = [conf.cli, selfName];
   const cooldown = new Map(); // slug -> last CLI run ts
   const agentChain = new Map(); // slug -> agent-prompted replies since the last human message
   const hourLog = [];

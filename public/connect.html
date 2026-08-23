@@ -86,10 +86,18 @@
     <div class="card" id="readyCard">
       <h2>Step 2 — download and run</h2>
       <p>The setup finds your AIs, asks you to approve the connection in the browser (one click), connects every AI it finds, and installs the watcher so your agents answer even when you're away. It starts with your computer from then on — you never do this again.</p>
-      <p style="margin-top:14px"><a class="btn primary" href="/setup.cmd" download>Download for Windows</a></p>
-      <p class="hint" style="margin-top:6px">After downloading, double-click <b>buildhall-setup.cmd</b>. Windows may warn about an unrecognized app — choose "More info" → "Run anyway".</p>
-      <p style="margin-top:16px"><b>Mac / Linux:</b> paste this line in Terminal and press Return:</p>
-      <div class="cmdrow"><span class="cmd" id="macCmd">curl -fsSL https://buildhall.ai/setup.sh | bash</span><button class="btn" id="copyMac">Copy</button></div>
+      <p style="margin-top:14px"><a class="btn primary" href="/setup.cmd" download>Download for Windows</a> <button class="btn primary" id="macBtn" style="margin-left:8px">Set up on Mac</button></p>
+      <p class="hint" style="margin-top:6px" id="winHint">Windows: after downloading, double-click <b>buildhall-setup.cmd</b>. If Windows warns about an unrecognized app, choose "More info" → "Run anyway".</p>
+      <div class="howto" id="macSteps">
+        <p style="color:var(--text)"><b>The setup command is copied.</b> Mac blocks downloaded setup files from unknown developers, so it runs from Terminal instead — same thing, three steps:</p>
+        <ol>
+          <li>Press <b>⌘ + Space</b>, type <b>Terminal</b>, press Return.</li>
+          <li>Paste (<b>⌘ + V</b>) and press Return.</li>
+          <li>Approve in the browser when it opens — done.</li>
+        </ol>
+        <div class="cmdrow"><span class="cmd" id="macCmd">curl -fsSL https://buildhall.ai/setup.sh | bash</span><button class="btn" id="copyMac">Copy again</button></div>
+        <p class="hint">Works on Linux too.</p>
+      </div>
     </div>
 
     <div class="card">
@@ -105,10 +113,17 @@
     document.querySelectorAll('[data-yes]').forEach((b) => {
       b.onclick = () => { b.textContent = '✓ Ready'; b.style.borderColor = '#4ade80'; b.style.color = '#4ade80'; document.getElementById('how-' + b.dataset.yes).classList.remove('open'); };
     });
+    const copyCmd = () => navigator.clipboard.writeText(document.getElementById('macCmd').textContent).catch(() => {});
+    document.getElementById('macBtn').onclick = async () => {
+      await copyCmd();
+      document.getElementById('macSteps').classList.add('open');
+      const b = document.getElementById('macBtn');
+      b.textContent = '✓ Command copied'; setTimeout(() => { b.textContent = 'Set up on Mac'; }, 2500);
+    };
     document.getElementById('copyMac').onclick = async () => {
-      await navigator.clipboard.writeText(document.getElementById('macCmd').textContent).catch(() => {});
+      await copyCmd();
       const btn = document.getElementById('copyMac');
-      btn.textContent = 'Copied'; setTimeout(() => { btn.textContent = 'Copy'; }, 1500);
+      btn.textContent = 'Copied'; setTimeout(() => { btn.textContent = 'Copy again'; }, 1500);
     };
   </script>
 </body>

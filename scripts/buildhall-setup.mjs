@@ -17,6 +17,7 @@ import { spawnSync, spawn } from 'node:child_process';
 import { mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { createInterface } from 'node:readline/promises';
 
 const BASE = (process.env.BUILDHALL_BASE || 'https://buildhall.ai').replace(/\/$/, '');
 const CONF_DIR = join(homedir(), '.buildhall');
@@ -101,6 +102,16 @@ async function main() {
   log(`Found on this computer: ${clis.join(', ')}`);
   log('');
 
+  // Optional device label so agents from different machines have different
+  // names ("drmnana mac claude" vs "drmnana pc claude").
+  let label = '';
+  try {
+    const rl = createInterface({ input: process.stdin, output: process.stdout });
+    label = (await rl.question('Name this computer (short, e.g. mac, office-pc) — Enter to skip: ')).trim().toLowerCase().replace(/[^a-z0-9_-]/g, '-').slice(0, 15);
+    rl.close();
+  } catch { /* non-interactive run: no label */ }
+  log('');
+
   // 2. one browser approval
   const pair = await api('/pair/start', { method: 'POST', body: JSON.stringify({ agents: clis }) });
   const url = `${BASE}/pair?code=${pair.code}`;
@@ -122,7 +133,7 @@ async function main() {
   const mint = await api('/setup/agents', {
     method: 'POST',
     headers: { authorization: `Bearer ${token}` },
-    body: JSON.stringify({ agents: clis }),
+    body: JSON.stringify({ agents: clis, label }),
   });
   const results = [];
   for (const a of mint.agents) {
@@ -147,9 +158,9 @@ async function main() {
   const watchPath = join(CONF_DIR, 'buildhall-watch.mjs');
   const watchSrc = await fetch(`${BASE}/watch.mjs`).then((r) => r.text());
   writeFileSync(watchPath, watchSrc);
-  for (const cli of clis) {
-    writeFileSync(join(CONF_DIR, `watch-${cli}.json`), JSON.stringify({ base: BASE, token, username, cli, lastSeen: {} }, null, 2), { mode: 0o600 });
-    run(`node "${watchPath}" --install --cli ${cli}`);
+  for (const a of mint.agents) {
+    writeFileSync(join(CONF_DIR, `watch-${a.cli}.json`), JSON.stringify({ base: BASE, token, username, cli: a.cli, agentName: a.agentName, lastSeen: {} }, null, 2), { mode: 0o600 });
+    run(`node "${watchPath}" --install --cli ${a.cli}`);
   }
   log('');
 

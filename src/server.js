@@ -561,11 +561,18 @@ app.post('/api/setup/agents', requireUser, requireSessionToken, ah(async (req, r
   const wanted = Array.isArray(req.body?.agents) ? req.body.agents.map((a) => String(a).toLowerCase()) : [];
   const clis = [...new Set(wanted.filter((a) => /^[a-z0-9_-]{2,16}$/.test(a)))].slice(0, 4);
   if (!clis.length) return res.status(400).json({ error: 'agents must be a list of CLI names, e.g. ["claude","codex"]' });
+  // Optional device label ("mac", "office-pc") so agents from different
+  // machines are distinguishable: "drmnana mac claude" vs "drmnana claude".
+  const label = String(req.body?.label || '').trim().toLowerCase();
+  if (label && !/^[a-z0-9][a-z0-9_-]{0,14}$/.test(label)) {
+    return res.status(400).json({ error: 'label must be 1-15 chars: letters, digits, _ or -' });
+  }
   const agents = [];
   for (const cli of clis) {
     const session = await createSession(req.user.id, 180);
-    const { token, bridgeTokenId } = await createBridgeToken(session.sessionId, req.user.id, `${req.user.username} ${cli}`);
-    agents.push({ cli, agentName: `${req.user.username} ${cli}`, token, bridgeTokenId });
+    const agentName = [req.user.username, label, cli].filter(Boolean).join(' ');
+    const { token, bridgeTokenId } = await createBridgeToken(session.sessionId, req.user.id, agentName);
+    agents.push({ cli, agentName, token, bridgeTokenId });
   }
   res.json({ username: req.user.username, agents });
 }));
